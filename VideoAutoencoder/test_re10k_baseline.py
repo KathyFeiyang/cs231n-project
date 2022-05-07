@@ -24,10 +24,12 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 """Run original Video Autoencoder on middle frame interpolation.
 Example usage:
-`python test_re10k.py \
+`python test_re10k_baseline.py \
     --savepath log/model \
     --resume log/model/re10k.ckpt \
-    --dataset RealEstate10K`
+    --dataset HMDB51 \
+    --video_limit 500
+`
 """
 
 def gettime():
@@ -105,7 +107,7 @@ def test(data, dataloader, encoder_3d, encoder_traj, decoder, rotate, log,
         full_clip = video_clips[0,:frame_limit]
 
         # Extract start and end frames
-        assert(end_frame_idx < frame_limit)
+        end_frame_idx = min(end_frame_idx, full_clip.shape[0] - 1)
         if mid_frame_idx is None:
             mid_frame_idx = int(0.5 * (start_frame_idx + end_frame_idx))
         clip = full_clip[[start_frame_idx, end_frame_idx]]
@@ -162,20 +164,20 @@ def test(data, dataloader, encoder_3d, encoder_traj, decoder, rotate, log,
         # Save pred and gound-truth trajectories
         pose_save_dir = os.path.join(args.savepath, f"Poses")
         os.makedirs(pose_save_dir, exist_ok=True)
-        true_camera_file = os.path.dirname(data[b_i][0]).replace('dataset_square', 'RealEstate10K')+'.txt'
-        with open(true_camera_file) as f:
-            f.readline() # remove line 0
-            poses = np.loadtxt(f)
-            reshaped_poses = poses[:,7:].reshape([-1,12])
-            camera = reshaped_poses[[
-                start_frame_idx,
-                end_frame_idx]]
+        # true_camera_file = os.path.dirname(data[b_i][0]).replace('dataset_square', 'RealEstate10K')+'.txt'
+        # with open(true_camera_file) as f:
+        #     f.readline() # remove line 0
+        #     poses = np.loadtxt(f)
+        #     reshaped_poses = poses[:,7:].reshape([-1,12])
+        #     camera = reshaped_poses[[
+        #         start_frame_idx,
+        #         end_frame_idx]]
         with open(pose_save_dir+f'/video_{b_i}_pred.txt','w') as f:
             lines = [' '.join(map(str,y))+'\n' for y in trajectory.tolist()]
             f.writelines(lines)
-        with open(pose_save_dir+f'/video_{b_i}_true.txt','w') as f:
-            lines = [' '.join(map(str,y))+'\n' for y in camera]
-            f.writelines(lines)
+        # with open(pose_save_dir+f'/video_{b_i}_true.txt','w') as f:
+        #     lines = [' '.join(map(str,y))+'\n' for y in camera]
+        #     f.writelines(lines)
     print()
 
 if __name__ == '__main__':

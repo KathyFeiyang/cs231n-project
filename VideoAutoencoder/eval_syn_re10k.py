@@ -1,6 +1,8 @@
 # Adapted from https://github.com/facebookresearch/synsin/blob/master/evaluation/evaluate_perceptualsim.py
 import argparse
 from glob import glob
+import os
+import pandas as pd
 from tqdm import tqdm
 from pprint import pprint
 import numpy as np
@@ -16,7 +18,9 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 """
 Example usage:
-`python eval_syn_re10k.py --lpips log/model/test_re10k_20220424002424/Videos`
+`
+python eval_syn_re10k.py --lpips log/model/test_re10k_20220507190938/Videos
+`
 """
 
 
@@ -116,7 +120,18 @@ if __name__ == "__main__":
         values_ssim.append(results['SSIM'])
         values_lpips.append(results['LPIPS'])
 
-        avg_psnr = np.mean(np.array(values_psnr))
-        avg_ssim = np.mean(np.array(values_ssim))
+    avg_psnr = np.mean(np.array(values_psnr))
+    avg_ssim = np.mean(np.array(values_ssim))
     avg_lpips = np.mean(np.array(values_lpips))
+
     pprint({'avg_psnr':avg_psnr, 'avg_ssim':avg_ssim, 'avg_lpips':avg_lpips})
+
+    results = pd.DataFrame(
+        {
+            "id": range(max_i),
+            "psnr": values_psnr,
+            "ssim": values_ssim,
+            "lpips": values_lpips,
+        }
+    )
+    results.to_csv(os.path.join(output_dir, "results.csv"))
