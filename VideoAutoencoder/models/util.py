@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import numpy as np
 import math
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 def euler2mat(angle):
     """Convert euler angles to rotation matrix.
      Reference: https://github.com/pulkitag/pycaffe-utils/blob/master/rot_utils.py#L174
@@ -44,6 +46,6 @@ def euler2mat(angle):
 
     v_trans = angle[:,3:]
 
-    rotMat = torch.cat([rotMat, v_trans.view([B, 3, 1]).cuda()], 2)  # F.affine_grid takes 3x4
+    rotMat = torch.cat([rotMat, v_trans.view([B, 3, 1]).to(device)], 2)  # F.affine_grid takes 3x4
 
     return rotMat

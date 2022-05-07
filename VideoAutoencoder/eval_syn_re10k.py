@@ -13,6 +13,13 @@ transform = transforms.Compose([transforms.ToTensor()])
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+
+"""
+Example usage:
+`python eval_syn_re10k.py --lpips log/model/test_re10k_20220424002424/Videos`
+"""
+
+
 def load_videos(videoname):
     vid, _, _ = io.read_video(videoname, pts_unit='sec')
     vid = vid.permute(0,3,1,2) / 255.0
