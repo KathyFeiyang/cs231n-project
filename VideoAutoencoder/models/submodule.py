@@ -46,6 +46,12 @@ def conv(in_planes, out_planes, kernel_size=3):
         nn.ReLU(inplace=True)
     )
 
+def conv3d(in_planes, out_planes, kernel_size=3):
+    return nn.Sequential(
+        nn.Conv3d(in_planes, out_planes, kernel_size=kernel_size, padding=(kernel_size-1)//2, stride=2),
+        nn.ReLU(inplace=True)
+    )
+
 def get_resnet50():
     model = torchvision.models.resnet50(pretrained=True)
     feature = nn.Sequential(*list(model.children())[:-2])
