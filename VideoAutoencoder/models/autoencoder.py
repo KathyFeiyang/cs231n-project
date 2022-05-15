@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.init import xavier_uniform_, zeros_
-from .submodule import conv, get_resnet50, stn
+from .submodule import conv, conv3d, get_resnet50, stn
 
 
 class Encoder3D(nn.Module):
@@ -64,6 +64,32 @@ class EncoderTraj(nn.Module):
 
         return pose_final
 
+class EncoderFlow(nn.Module):
+    def __init__(self, args):
+        super(EncoderFlow, self).__init__()
+        self.conv3d_1 = conv3d(64 * 2, 64, kernel_size=3)
+        self.conv3d_2 = conv3d(64, 32, kernel_size=3)
+        self.conv3d_3 = conv3d(32, 16, kernel_size=3)
+        self.conv3d_4 = nn.Conv3d(16, 6, kernel_size=3)
+        self.scale_rotate = args.scale_rotate
+        self.scale_translate = args.scale_translate
+
+    def forward(self, transformed_start_voxel, end_voxel):
+        out = torch.cat((transformed_start_voxel, end_voxel), axis=1)
+        out = self.conv3d_1(out)
+        out = self.conv3d_2(out)
+        out = self.conv3d_3(out)
+        out = self.conv3d_4(out)  # [N, 6, 2, 6, 6]
+
+        pose = out.mean(4).mean(3).mean(2)
+        pose = pose.view(pose.size(0), 6)
+
+        pose_r = pose[:,:3] * self.scale_rotate
+        pose_t = pose[:,3:] * self.scale_translate
+
+        pose_final = torch.cat([pose_r, pose_t], 1)
+        return pose_final
+
 class Decoder(nn.Module):
     def __init__(self, args):
         super(Decoder, self).__init__()
@@ -81,13 +107,25 @@ class Decoder(nn.Module):
         output = self.upconv_final(code)
         return output
 
-
 class Rotate(nn.Module):
     def __init__(self, args):
         super(Rotate, self).__init__()
         self.padding_mode = args.padding_mode
-        self.conv3d_1 = nn.Conv3d(32,64,3,padding=1)
-        self.conv3d_2 = nn.Conv3d(64,64,3,padding=1)
+        self.conv3d_1 = nn.Conv3d(32, 64, 3, padding=1)
+        self.conv3d_2 = nn.Conv3d(64, 64, 3, padding=1)
+
+    def forward(self, code, theta):
+        rot_code = stn(code, theta, self.padding_mode)
+        rot_code = F.leaky_relu(self.conv3d_1(rot_code))
+        rot_code = F.leaky_relu(self.conv3d_2(rot_code))
+        return rot_code
+
+class Flow(nn.Module):
+    def __init__(self, args):
+        super(Flow, self).__init__()
+        self.padding_mode = args.padding_mode
+        self.conv3d_1 = nn.Conv3d(64, 64, 3, padding=1)
+        self.conv3d_2 = nn.Conv3d(64, 64, 3, padding=1)
 
     def forward(self, code, theta):
         rot_code = stn(code, theta, self.padding_mode)
