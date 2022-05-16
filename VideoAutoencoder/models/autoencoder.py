@@ -69,26 +69,17 @@ class EncoderFlow(nn.Module):
         super(EncoderFlow, self).__init__()
         self.conv3d_1 = conv3d(64 * 2, 64, kernel_size=3)
         self.conv3d_2 = conv3d(64, 32, kernel_size=3)
-        self.conv3d_3 = conv3d(32, 16, kernel_size=3)
-        self.conv3d_4 = nn.Conv3d(16, 6, kernel_size=3)
-        self.scale_rotate = args.scale_rotate
-        self.scale_translate = args.scale_translate
+        self.conv3d_3 = nn.ConvTranspose3d(32, 32, 4, stride=2, padding=1)
+        self.conv3d_4 = nn.ConvTranspose3d(32, 3, 4, stride=2, padding=1)
 
     def forward(self, transformed_start_voxel, end_voxel):
         out = torch.cat((transformed_start_voxel, end_voxel), axis=1)
         out = self.conv3d_1(out)
         out = self.conv3d_2(out)
         out = self.conv3d_3(out)
-        out = self.conv3d_4(out)  # [N, 6, 2, 6, 6]
-
-        pose = out.mean(4).mean(3).mean(2)
-        pose = pose.view(pose.size(0), 6)
-
-        pose_r = pose[:,:3] * self.scale_rotate
-        pose_t = pose[:,3:] * self.scale_translate
-
-        pose_final = torch.cat([pose_r, pose_t], 1)
-        return pose_final
+        out = self.conv3d_4(out)
+        out = torch.transpose(out, 1, 4)  # [1, H=32, W=64, H=64, 3]
+        return out
 
 class Decoder(nn.Module):
     def __init__(self, args):
@@ -127,8 +118,8 @@ class Flow(nn.Module):
         self.conv3d_1 = nn.Conv3d(64, 64, 3, padding=1)
         self.conv3d_2 = nn.Conv3d(64, 64, 3, padding=1)
 
-    def forward(self, code, theta):
-        rot_code = stn(code, theta, self.padding_mode)
+    def forward(self, code, grid):
+        rot_code = F.grid_sample(code, grid, padding_mode=self.padding_mode)
         rot_code = F.leaky_relu(self.conv3d_1(rot_code))
         rot_code = F.leaky_relu(self.conv3d_2(rot_code))
         return rot_code
