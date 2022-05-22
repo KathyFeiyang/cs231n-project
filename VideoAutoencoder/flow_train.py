@@ -50,7 +50,6 @@ def main():
     _, ValidData = D.dataloader(args.dataset, args.clip_length, args.interval, load_all_frames=True)
     log.info(f'#Train vid: {len(TrainData)}')
 
-    TrainData = TrainData[:5]
     print("TrainData:", len(TrainData))
     TrainLoader = DataLoader(DL.ImageFloder(TrainData, args.dataset),
         batch_size=args.bsize, shuffle=True, num_workers=args.worker, drop_last=True
