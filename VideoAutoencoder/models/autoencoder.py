@@ -69,8 +69,8 @@ class EncoderFlow(nn.Module):
         super(EncoderFlow, self).__init__()
         self.conv3d_1 = conv3d(64 * 2, 64, kernel_size=3)
         self.conv3d_2 = conv3d(64, 32, kernel_size=3)
-        self.conv3d_3 = nn.ConvTranspose3d(32, 32, 4, stride=2, padding=1)
-        self.conv3d_4 = nn.ConvTranspose3d(32, 3, 4, stride=2, padding=1)
+        self.conv3d_3 = nn.ConvTranspose3d(32, 32, 3, stride=2)
+        self.conv3d_4 = nn.ConvTranspose3d(32, 3, 4, stride=(4, 2, 1), padding=(2, 2, 2))
 
     def forward(self, transformed_start_voxel, end_voxel):
         out = torch.cat((transformed_start_voxel, end_voxel), axis=1)
