@@ -53,8 +53,8 @@ def main():
     # get auto-encoder
     encoder_3d = Encoder3D(args)
     encoder_traj = EncoderTraj(args)
-    encoder_flow = FlowEncoder(args)
-    decoder_flow = FlowDecoder(args)
+    encoder_flow = EncoderFlow(args)
+    decoder_flow = Flow(args)
     rotate = Rotate(args)
     decoder = Decoder(args)
 
@@ -151,14 +151,6 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
         flow_rep = encoder_flow(rot_codes, final_codes)
         flow_mid = get_fraction_transform(start_frame_idx, end_frame_idx, mid_frame_idx, flow_rep)
         reconstruct_voxel = decoder_flow(rot_codes, flow_mid)
-
-        flow_rep = encoder_flow(rot_init_voxels, final_voxels)
-flow_pose = get_fraction_transform(
-        start_frame_idx, end_frame_idx, mid_frame_idx,
-        flow_pose)
-z_flow = euler2mat(flow_rep)
-recon_final_voxels = flow(rot_init_voxels, z_flow)
-
 
         output = decoder(reconstruct_voxel)
         pred = F.interpolate(output, (h, w), mode='bilinear')

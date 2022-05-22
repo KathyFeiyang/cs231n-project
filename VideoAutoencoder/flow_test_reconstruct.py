@@ -42,8 +42,8 @@ def main():
     # get auto-encoder
     encoder_3d = Encoder3D(args)
     encoder_traj = EncoderTraj(args)
-    encoder_flow = FlowEncoder(args)
-    decoder_flow = FlowDecoder(args)
+    encoder_flow = EncoderFlow(args)
+    decoder_flow = Flow(args)
     rotate = Rotate(args)
     decoder = Decoder(args)
 
@@ -58,7 +58,7 @@ def main():
     if args.resume:
         if os.path.isfile(args.resume):
             log.info("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, map_location=torch.device(device))
             encoder_3d.load_state_dict(checkpoint['encoder_3d'])
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
             encoder_flow.load_state_dict(checkpoint['encoder_flow'])

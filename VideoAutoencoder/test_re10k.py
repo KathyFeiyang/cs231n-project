@@ -13,11 +13,15 @@ from models.autoencoder import *
 from test_helper import *
 from tqdm import tqdm
 import warnings
+
+import torchvision.transforms as transforms
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.functional")
 
 parser = test_re10k_parser()
 args = parser.parse_args()
 np.set_printoptions(precision=3)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def gettime():
     # get GMT time in string
@@ -32,7 +36,7 @@ def main():
     for key, value in sorted(vars(args).items()):
         log.info(str(key) + ': ' + str(value))
 
-    TestData, _ = D.dataloader(args.dataset, 1, args.interval,
+    TestData, _ = D.dataloader(args.dataset, 1, args.interval, n_valid=0,
                                is_train=args.train_set, load_all_frames=True)
     TestLoader = DataLoader(DL.ImageFloder(TestData, args.dataset),
                             batch_size=1, shuffle=False, num_workers=0)
@@ -44,15 +48,15 @@ def main():
     decoder = Decoder(args)
 
     # cuda
-    encoder_3d = nn.DataParallel(encoder_3d).cuda()
-    encoder_traj = nn.DataParallel(encoder_traj).cuda()
-    rotate = nn.DataParallel(rotate).cuda()
-    decoder = nn.DataParallel(decoder).cuda()
+    encoder_3d = nn.DataParallel(encoder_3d).to(device)
+    encoder_traj = nn.DataParallel(encoder_traj).to(device)
+    rotate = nn.DataParallel(rotate).to(device)
+    decoder = nn.DataParallel(decoder).to(device)
 
     if args.resume:
         if os.path.isfile(args.resume):
             log.info("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
+            checkpoint = torch.load(args.resume, map_location=torch.device(device))
             encoder_3d.load_state_dict(checkpoint['encoder_3d'])
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
             decoder.load_state_dict(checkpoint['decoder'])
@@ -77,12 +81,12 @@ def test(data, dataloader, encoder_3d, encoder_traj, decoder, rotate, log):
     for b_i, video_clips in tqdm(enumerate(dataloader)):
         if b_i == video_limit: break
 
-        encoder_3d.eval()
-        encoder_traj.eval()
-        decoder.eval()
-        rotate.eval()
+        # encoder_3d.eval()
+        # encoder_traj.eval()
+        # decoder.eval()
+        # rotate.eval()
 
-        clip = video_clips[0,:frame_limit].cuda()
+        clip = video_clips[0,:frame_limit].to(device)
         t, c, h, w = clip.size()
 
         poses = get_poses(encoder_traj, clip)
@@ -120,16 +124,16 @@ def test(data, dataloader, encoder_3d, encoder_traj, decoder, rotate, log):
         pose_save_dir = os.path.join(args.savepath, f"Poses")
         os.makedirs(pose_save_dir, exist_ok=True)
         true_camera_file = os.path.dirname(data[b_i][0]).replace('dataset_square', 'RealEstate10K')+'.txt'
-        with open(true_camera_file) as f:
-            f.readline() # remove line 0
-            poses = np.loadtxt(f)
-            camera = poses[:,7:].reshape([-1,12])[:len(trajectory)]
+        # with open(true_camera_file) as f:
+        #     f.readline() # remove line 0
+        #     poses = np.loadtxt(f)
+        #     camera = poses[:,7:].reshape([-1,12])[:len(trajectory)]
         with open(pose_save_dir+f'/video_{b_i}_pred.txt','w') as f:
             lines = [' '.join(map(str,y))+'\n' for y in trajectory.tolist()]
             f.writelines(lines)
-        with open(pose_save_dir+f'/video_{b_i}_true.txt','w') as f:
-            lines = [' '.join(map(str,y))+'\n' for y in camera]
-            f.writelines(lines)
+        # with open(pose_save_dir+f'/video_{b_i}_true.txt','w') as f:
+        #     lines = [' '.join(map(str,y))+'\n' for y in camera]
+        #     f.writelines(lines)
     print()
 
 if __name__ == '__main__':

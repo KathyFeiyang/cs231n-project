@@ -2,8 +2,8 @@ project_name: VideoAutoencoder
 
 RealEstate10K:
   name: RealEstate10K
-  train_path: /home/zihang/developer/data/RealEstate10K/dataset/train/
-  test_path: /home/zihang/developer/data/RealEstate10K/dataset/test/
+  train_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset/train/
+  test_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset/test/
   input_size: 256
 
 Matterport3D_Preatrain:
