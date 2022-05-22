@@ -7,8 +7,10 @@ import torchvision.io as io
 from models.util import euler2mat
 from models.submodule import VGGPerceptualLoss, stn
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 perceptual_loss = VGGPerceptualLoss()
-perceptual_loss = nn.DataParallel(perceptual_loss).cuda()
+perceptual_loss = nn.DataParallel(perceptual_loss).to(device)
 
 def compute_reconstruction_loss(args, encoder_3d, encoder_traj, rotate, decoder, clips, return_output=False):
     b, t, c, h, w = clips.size()
@@ -80,7 +82,7 @@ def train_netd(args, netd, real_images, fake_images, optimizer_d):
     error_fake = output2.mean()
     error_fake.backward()
     # calculate gradient penalty
-    eps = torch.rand(b*t, 1, 1, 1).cuda()
+    eps = torch.rand(b*t, 1, 1, 1).to(device)
     x_hat = eps * real.data + (1 - eps) * fake.data
     x_hat.requires_grad = True
     hat_predict = netd(x_hat)
@@ -109,7 +111,7 @@ def visualize_synthesis(args, dataloader, encoder_3d, encoder_traj, decoder, rot
     for b_i, vid_clips in enumerate(dataloader):
         encoder_3d.eval(); decoder.eval(); rotate.eval(); encoder_traj.eval();
         fend = 30
-        vid_clips = vid_clips.cuda()[:,:fend]
+        vid_clips = vid_clips.to(device)[:,:fend]
         b, t, c, h, w = vid_clips.size()
         clips = vid_clips.view(b * t, c, h, w)
         preds = []

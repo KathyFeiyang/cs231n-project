@@ -56,9 +56,9 @@ def train_parser():
                         help='interval between clip frames')
     parser.add_argument('--clip_length', type=int, default=6,
                         help='number of frames in the training clip')
+    parser.add_argument('--video_limit', type=int, default=100,
+                        help='number of videos to test')
     parser.add_argument('--lr_adj', type=float, default=1.0,
                         help='a multiplier to adjust the training schedule')
 
     return parser
-
-
