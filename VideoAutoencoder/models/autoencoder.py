@@ -64,6 +64,14 @@ class EncoderTraj(nn.Module):
 
         return pose_final
 
+class ContiguousGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x):
+        return x
+    @staticmethod
+    def backward(ctx, grad_out):
+        return grad_out.contiguous()
+
 class EncoderFlow(nn.Module):
     def __init__(self, args):
         super(EncoderFlow, self).__init__()
@@ -78,6 +86,7 @@ class EncoderFlow(nn.Module):
         out = self.conv3d_2(out)
         out = self.conv3d_3(out)
         out = self.conv3d_4(out)
+        out = ContiguousGrad.apply(out)
         out = torch.transpose(out, 1, 4)  # [1, H=32, W=64, H=64, 3]
         return out
 

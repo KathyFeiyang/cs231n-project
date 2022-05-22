@@ -2,6 +2,7 @@ import os
 import time
 import logger
 import torch
+from torch import autograd
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 from parser import train_parser
@@ -16,21 +17,29 @@ from test_helper import *
 import numpy as np
 
 ### temp ###
-n_valid = 20
+n_valid = 1
 
 parser = train_parser()
 args = parser.parse_args()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 def get_fraction_transform(start_frame_idx, end_frame_idx, mid_frame_idx, original):
     """Computes fraction of rotation + translation transformation."""
     fraction = (mid_frame_idx - start_frame_idx) / (end_frame_idx - start_frame_idx)
     return original * fraction
 
+
+def gettime():
+    # get GMT time in string
+    return time.strftime("%Y%m%d%H%M%S", time.gmtime())
+
+
 def main():
     if not os.path.isdir(args.savepath):
         os.makedirs(args.savepath)
+    args.savepath = args.savepath+f'/flow_train_{gettime()}'
     log = logger.setup_logger(args.savepath + '/training.log')
     writer = SummaryWriter(log_dir=args.savepath)
 
@@ -41,6 +50,7 @@ def main():
     _, ValidData = D.dataloader(args.dataset, args.clip_length, args.interval, load_all_frames=True)
     log.info(f'#Train vid: {len(TrainData)}')
 
+    TrainData = TrainData[:5]
     print("TrainData:", len(TrainData))
     TrainLoader = DataLoader(DL.ImageFloder(TrainData, args.dataset),
         batch_size=args.bsize, shuffle=True, num_workers=args.worker, drop_last=True
@@ -92,19 +102,6 @@ def main():
         log.info('=> No checkpoint file. Start from scratch.')
 
     start_full_time = time.time()
-    # TrainData_flow, target_train = prev(TrainData, TrainLoader, encoder_3d, encoder_traj, decoder, rotate, log,
-    #          start_frame_idx=0, end_frame_idx=args.frame_limit - 1, mid_frame_idx=None,
-    #          save_mid_only=True)
-    # ValidData_flow,target_valid = prev(ValidData, ValidLoader, encoder_3d, encoder_traj, decoder, rotate, log,
-    #          start_frame_idx=0, end_frame_idx=args.frame_limit - 1, mid_frame_idx=None,
-    #          save_mid_only=True)
-
-    # TrainLoader = DataLoader(DL.ImageFloder(TrainData_flow, args.dataset),
-    #     batch_size=args.bsize, shuffle=True, num_workers=args.worker,drop_last=True
-    # )
-    # ValidLoader = DataLoader(DL.ImageFloder(ValidData_flow, args.dataset),
-    #     batch_size=1, shuffle=False, num_workers=0,drop_last=True
-    # )
 
     start_frame_idx = 0
     end_frame_idx = args.clip_length - 1
@@ -116,6 +113,7 @@ def main():
               optimizer_g, log, epoch, writer)
 
     log.info('full training time = {:.2f} Hours'.format((time.time() - start_full_time) / 3600))
+
 
 def generate_voxels(video_clips, frame_limit, encoder_3d, encoder_traj, rotate, log,
          start_frame_idx, end_frame_idx, mid_frame_idx=None, save_mid_only=True):
@@ -151,9 +149,8 @@ def generate_voxels(video_clips, frame_limit, encoder_3d, encoder_traj, rotate, 
         z_identity[:, i, i] = 1
     end_voxel = encoder_3d(clip[1:2])
     end_rot_codes = rotate(end_voxel, z_identity)
-    print("start:", start_rot_codes.shape)
-    print("end:", end_rot_codes.shape)
     return start_rot_codes, end_rot_codes
+
 
 cur_max_psnr = 0
 def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
@@ -176,9 +173,9 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
     video_limit = min(args.video_limit, len(TrainLoader))
     frame_limit = args.clip_length
     for b_i, video_clips in tqdm(enumerate(TrainLoader)):
-        print("\n", b_i)
         if b_i == video_limit: break
 
+        #with autograd.detect_anomaly():
         adjust_lr(args, optimizer_g, epoch, b_i, n_b)
         video_clips = video_clips.to(device)
         n_iter = b_i + n_b * epoch
@@ -207,25 +204,27 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         info = 'Loss Image = {:.3f}({:.3f})'.format(_loss.val, _loss.avg) if _loss.count > 0 else '..'
         log.info('Epoch{} [{}/{}] {} T={:.2f}'.format(epoch, b_i, n_b, info, batch_time))
 
-        if n_iter > 0 and n_iter % args.valid_freq == 0:
+        #if n_iter > 0 and n_iter % args.valid_freq == 0:
+        if True:
             with torch.no_grad():
                 val_loss = test_reconstruction_f(
-                    ValidLoader, encoder_flow, flow, target_valid,
-                                    log, epoch, n_iter, writer)
+                    ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
+                    encoder_3d, encoder_traj, rotate,
+                    encoder_flow, flow, log, epoch, n_iter, writer)
                 #output_dir = visualize_synthesis(args, ValidLoader, encoder_flow, flow,
                 #                                 log, n_iter)
                 #avg_psnr, _, _ = test_synthesis(output_dir)
 
             log.info("Saving new checkpoint_flow.")
             savefilename = args.savepath + '/checkpoint_flow.tar'
-            save_checkpoint(encoder_flow, flow, savefilename)
+            save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
 
             global cur_min_loss
             if val_loss < cur_max_psnr:
                 log.info("Saving new best checkpoint_flow.")
                 cur_min_loss = val_loss
                 savefilename = args.savepath + '/checkpoint_flow_best.tar'
-                save_checkpoint(encoder_flow, flow, savefilename)
+                save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
 
 
 def compute_reconstruction_loss_f(encoder_flow, flow, target_train,
@@ -239,25 +238,35 @@ def compute_reconstruction_loss_f(encoder_flow, flow, target_train,
         return loss_l1
 
 
-def test_reconstruction_f(dataloader, encoder_flow, flow, target, log, epoch, n_iter, writer):
+def test_reconstruction_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
+                          encoder_3d, encoder_traj, rotate,
+                          encoder_flow, flow, log, epoch, n_iter, writer):
     _loss = AverageMeter()
     n_b = len(dataloader)
-    for b_i, vid_clips in enumerate(dataloader):
-        encoder_flow.eval()
-        flow.eval()
+
+    encoder_flow.eval()
+    flow.eval()
+
+    for b_i, video_clips in enumerate(dataloader):
         b_s = time.perf_counter()
-        vid_clips = vid_clips.to(device)
+        video_clips = video_clips.to(device)
+        n_iter = b_i + n_b * epoch
+
         with torch.no_grad():
-            l_r = compute_reconstruction_loss_f(encoder_flow, flow, target,
-                                                vid_clips, return_output=False)
+            start_rot_codes, end_rot_codes = generate_voxels(
+                video_clips, frame_limit, encoder_3d, encoder_traj, rotate, log,
+                start_frame_idx, end_frame_idx, mid_frame_idx=None, save_mid_only=True)
+            l_r = compute_reconstruction_loss_f(
+                encoder_flow, flow,
+                target_train=end_rot_codes, rot_codes=start_rot_codes, return_output=False)
         writer.add_scalar('Reconstruction Loss (Valid)', l_r, n_iter)
         _loss.update(l_r.item())
         info = 'Loss = {:.3f}({:.3f})'.format(_loss.val, _loss.avg)
         b_t = time.perf_counter() - b_s
         log.info('Validation at Epoch{} [{}/{}] {} T={:.2f}'.format(
             epoch, b_i, n_b, info, b_t))
-    return _loss.avg
 
+    return _loss.avg
 
 
 
