@@ -1,9 +1,15 @@
 project_name: VideoAutoencoder
 
+HMDB51:
+  name: HMDB51
+  train_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset_try/test/
+  test_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset_try/test/
+  input_size: 256
+
 RealEstate10K:
   name: RealEstate10K
-  train_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset/train/
-  test_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset/test/
+  train_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset_try/test/
+  test_path: /Users/bidiptasarkar/Desktop/CS231N/project/dataset_try/test/
   input_size: 256
 
 Matterport3D_Preatrain:
