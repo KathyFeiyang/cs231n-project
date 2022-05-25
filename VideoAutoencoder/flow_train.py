@@ -10,19 +10,23 @@ import data.image_folder as D
 import data.data_loader as DL
 from models.autoencoder import *
 from models.discriminator import *
+from models.submodule import stn
 from train_helper import *
 from eval_syn_re10k import compute_error_video
 from tqdm import tqdm
 from test_helper import *
 import numpy as np
+import warnings
 
 ### temp ###
 n_valid = 1
+debug = True
 
 parser = train_parser()
 args = parser.parse_args()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.functional")
 
 
 def get_fraction_transform(start_frame_idx, end_frame_idx, mid_frame_idx, original):
@@ -55,7 +59,8 @@ def main():
     _, ValidData = D.dataloader(args.dataset, args.clip_length, args.interval, load_all_frames=True)
     log.info(f'#Train vid: {len(TrainData)}')
 
-    print("TrainData:", len(TrainData))
+    if debug:
+        TrainData = TrainData[:5]  # for debugging purposes
     TrainLoader = DataLoader(DL.ImageFloder(TrainData, args.dataset),
         batch_size=args.bsize, shuffle=True, num_workers=args.worker, drop_last=True
     )
@@ -119,66 +124,120 @@ def main():
     log.info('full training time = {:.2f} Hours'.format((time.time() - start_full_time) / 3600))
 
 
-def generate_voxels(video_clips, frame_limit, encoder_3d, encoder_traj, rotate,
-         start_frame_idx, end_frame_idx):
-    """Generates start voxels and end voxels.
+def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, encoder_flow, flow,
+                                     clips, optimizer, epochs=5):
+    if debug:
+        print("\nComputing reconstruction loss...")
+    b, t, c, h, w = clips.size()
+    rot_codes = None
+    gt_codes = None
+    # want no gradient
+    with torch.no_grad():
+        codes = encoder_3d(clips.reshape(b * t, c, h, w))
+        _, C, H, W, D = codes.size()
+        codes = codes.reshape(b, t, C, H, W, D)
+        if debug:
+            print(codes.size())
+            print("- Generated all codes")
 
-    Assumes that the batch size of `video_clips` is 1.
-    The start voxels are rotated according the trajectory from start to end."""
-    full_clip = video_clips[0, :frame_limit].to(device)
+        clipsi = clips.unsqueeze(1).repeat(1, t, 1, 1, 1, 1)
+        clipsj = clips.unsqueeze(2).repeat(1, 1, t, 1, 1, 1)
+        clipsi = clipsi.reshape(b, t * t, c, h, w)
+        clipsj = clipsj.reshape(b, t * t, c, h, w)
+        if debug:
+            print("- Generated all clips")
 
-    # Extract start and end frames
-    end_frame_idx = min(end_frame_idx, full_clip.shape[0] - 1)
-    clip = full_clip[[start_frame_idx, end_frame_idx]]
-    t, c, h, w = clip.size()
+        clips_pair = torch.cat([clipsi, clipsj], dim=2) # b x t*t x 2*c x h x w
+        pair_tensor = clips_pair.reshape(b * (t * t), c*2, h, w)
+        poses = encoder_traj(pair_tensor)
+        theta = euler2mat(poses) # (b * t * t, 3, 4)
+        if debug:
+            print("- Generated all theta")
 
-    # Predict trajectory
-    poses = get_poses(encoder_traj, clip)  # T x C x H x W
-    trajectory = construct_trajectory(poses)  # T x 3 x 4
-    trajectory = trajectory.reshape(-1, 12)  # T x 3 x 4
+        code_t = codes.unsqueeze(1).repeat(1, t, 1, 1, 1, 1, 1).reshape(b * t * t, C, H, W, D)
+        rot_codes = stn(code_t, theta, args.padding_mode)
+        _, C1, H1, W1, D1 = rot_codes.size()
+        reshape_rot_codes = rot_codes.reshape(b, t, t, C1, H1, W1, D1)
+        if debug:
+            print("- Did all rotations")
 
-    start_voxel = encoder_3d(clip[0:1])
-    clip_in = torch.stack([clip[0], clip[1]])  # 2 x 3 x H x W (2 frames)
-    pose = get_pose_window(encoder_traj, clip_in)  # 2 x 6 (3 for r and 3 for t)
-    z = euler2mat(pose[1:])  # 1 x 3 x 4 (input = 2nd frame onwards)
-    start_rot_codes = rotate(start_voxel, z)
+        gt_codes = reshape_rot_codes.diagonal(dim1=1, dim2=2).permute(0, 5, 1, 2, 3, 4)
+        gt_codes = gt_codes.unsqueeze(2).repeat(1, 1, t, 1, 1, 1, 1)
+        gt_codes = gt_codes.reshape(b * t * t, C1, H1, W1, D1)
+        if debug:
+            print("- Generated all gt codes")
 
-    z_identity = torch.zeros_like(z)
-    for i in range(3):
-        z_identity[:, i, i] = 1
-    end_voxel = encoder_3d(clip[1:2])
-    end_rot_codes = rotate(end_voxel, z_identity)
+    if optimizer is not None:
+        for i in range(epochs):
+            optimizer.zero_grad()
+            flow_rep = encoder_flow(rot_codes, gt_codes)
+            reconstructed_codes = flow(rot_codes, flow_rep)
+            reg = flow_rep.abs().mean()
+            to_ret = (reconstructed_codes - gt_codes).abs().mean()
+            full_loss = to_ret
+            full_loss.backward()
+            print('loss l2:', (reconstructed_codes - gt_codes).square().mean(), 'reg:', reg, 'default l2:', (gt_codes - rot_codes).square().mean(), 'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
+            optimizer.step()
 
-    return start_rot_codes, end_rot_codes
+    return to_ret
 
 
-def generate_interpolation_pairs(
-        video_clips, frame_limit, encoder_3d, encoder_traj, rotate):
+def generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj):
     """Generates 2-spaced frame pairs for interpolation.
     
     Returns both the end-reference-frame rotated and middle-reference-frame
-    rotated voxels for the start frame."""
-    # clip = video_clips[0,:frame_limit].cuda()
-    video_clips = video_clips[:, :frame_limit]
+    rotated voxels for the start frame in shape b * (t-2) x c x h x w x d."""
+    if debug:
+        print("\nComputing interpolation loss...")
+    b, t, c, h, w = clips.size()
+    start_rot_codes_end_ref = None
+    end_rot_codes = None
+    start_rot_codes_mid_ref = None
+    middle_rot_codes = None
 
-    # Extract pairs of frames with a spacing of 2
-    n, t, c, h, w = video_clips.size()
-    start_end_pairs = []
-    start_mid_pairs = []
-    for batch_idx in range(n):
-        full_clip = video_clips[batch_idx: batch_idx + 1]
-        for i in range(t - 3):
-            subclip = full_clip[:, i: i+3]
-            start_rot_codes_end_ref, end_rot_codes = generate_voxels(
-                subclip[:, [0, 2]], 2, encoder_3d, encoder_traj, rotate,
-                start_frame_idx=0, end_frame_idx=1)
-            start_rot_codes_mid_ref, middle_rot_codes = generate_voxels(
-                subclip[:, [0, 1]], 2, encoder_3d, encoder_traj, rotate,
-                start_frame_idx=0, end_frame_idx=1)
-            start_end_pairs.append((start_rot_codes_end_ref, end_rot_codes))
-            start_mid_pairs.append((start_rot_codes_mid_ref, middle_rot_codes))
+    with torch.no_grad():
+        codes = encoder_3d(clips.reshape(b * t, c, h, w))
+        _, C, H, W, D = codes.size()
+        codes = codes.view(b, t, C, H, W, D)
+        if debug:
+            print(codes.size())
+            print("- Generated all codes")
 
-    return start_end_pairs, start_mid_pairs
+        clips_start = clips[:, :t-2]
+        clips_end = clips[:, 2:]
+        clips_middle = clips[:, 1: t-1]
+        if debug:
+            print("- Generated all start, end, middle clips")
+
+        start_end_pair = torch.cat([clips_start, clips_end], dim=2)  # b x t-2 x 2*c x h x w
+        start_mid_pair = torch.cat([clips_start, clips_middle], dim=2)
+        start_end_pair_tensor = start_end_pair.view(b * (t - 2), c * 2, h, w)
+        start_mid_pair_tensor = start_mid_pair.view(b * (t - 2), c * 2, h, w)
+        start_end_poses = encoder_traj(start_end_pair_tensor)
+        start_mid_poses = encoder_traj(start_mid_pair_tensor)
+        start_end_theta = euler2mat(start_end_poses)  # b * (t-2) x 3 x 4
+        start_mid_theta = euler2mat(start_mid_poses)  # b * (t-2) x 3 x 4
+        if debug:
+            print("- Generated all start-middle, start-end theta")
+
+        code_start = codes[:, :t-2].reshape(b * (t - 2), C, H, W, D)
+        start_rot_codes_end_ref = stn(code_start, start_end_theta, args.padding_mode)
+        start_rot_codes_mid_ref = stn(code_start, start_mid_theta, args.padding_mode)
+        if debug:
+            print("- Did end referenced and middle referenced rotations")
+
+        code_end = codes[:, 2:].reshape(b * (t - 2), C, H, W, D)
+        code_middle = codes[:, 1: t-1].reshape(b * (t - 2), C, H, W, D)
+        theta_identity = torch.zeros_like(start_end_theta)
+        for i in range(3):
+            theta_identity[:, i, i] = 1
+        end_rot_codes = stn(code_end, theta_identity, args.padding_mode)
+        middle_rot_codes = stn(code_middle, theta_identity, args.padding_mode)
+        if debug:
+            print("- Generated end and middle codes")
+
+    return start_rot_codes_end_ref, end_rot_codes, \
+            start_rot_codes_mid_ref, middle_rot_codes
 
 
 cur_max_psnr = 0
@@ -210,34 +269,34 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         video_clips = video_clips.to(device)
         n_iter = b_i + n_b * epoch
 
+        if debug:
+            video_clips = video_clips[0:2, 0:4]  # for debugging purposes
+
+        # Compute reconstruction loss and back prop
+        reconstruction_loss = compute_reconstruction_loss_flow(
+            args, encoder_3d, encoder_traj, encoder_flow, flow,
+            video_clips, optimizer_g, epochs=1)
+        log.info('Epoch {} [{}/{}] Rec Loss = {}'.format(
+            epoch, b_i, n_b, reconstruction_loss))
+
+        # Compute interpolation loss and back prop
         optimizer_g.zero_grad()
 
-        # Compute reconstruction loss
-        start_rot_codes, end_rot_codes = generate_voxels(
-            video_clips, frame_limit, encoder_3d, encoder_traj, rotate,
-            start_frame_idx, end_frame_idx)
+        start_rot_codes_end_ref, end_rot_codes, \
+            start_rot_codes_mid_ref, middle_rot_codes = \
+                generate_interpolation_pairs_batch(video_clips, encoder_3d, encoder_traj)
+        interpolation_loss = compute_interpolation_loss_f(
+            encoder_flow, flow, middle_rot_codes, fraction=0.5,
+            start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
+            start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
+        log.info('Epoch {} [{}/{}] Int Loss = {}'.format(
+            epoch, b_i, n_b, interpolation_loss))
 
-        reconstruction_loss = compute_reconstruction_loss_f(
-            encoder_flow, flow,
-            target_train=end_rot_codes, rot_codes=start_rot_codes, return_output=False)
-
-        # Compute interpolation loss
-        interpolation_loss = 0.0
-        start_end_pairs, start_mid_pairs = generate_interpolation_pairs(
-            video_clips, frame_limit, encoder_3d, encoder_traj, rotate)
-        for start_end_pair, start_mid_pair in zip(
-                start_end_pairs, start_mid_pairs):
-            start_rot_codes_end_ref, end_rot_codes = start_end_pair
-            start_rot_codes_mid_ref, middle_rot_codes = start_mid_pair
-            interpolation_loss += compute_interpolation_loss_f(
-                encoder_flow, flow, middle_rot_codes, fraction=0.5,
-                start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
-                start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
+        interpolation_loss.backward()
+        optimizer_g.step()
 
         # Compute total loss and back prop
         total_loss = reconstruction_loss + interpolation_loss
-        total_loss.backward()
-        optimizer_g.step()
 
         _loss.update(total_loss.item())
         batch_time = time.perf_counter() - b_s
@@ -247,21 +306,19 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         info = 'Loss Image = {:.3f}({:.3f})'.format(_loss.val, _loss.avg) if _loss.count > 0 else '..'
         log.info('Epoch {} [{}/{}] {} T={:.2f}'.format(epoch, b_i, n_b, info, batch_time))
 
-        if n_iter > 0 and n_iter % args.valid_freq == 0:
-        # if True:  # for debugging purposes
+        if debug or (n_iter > 0 and n_iter % args.valid_freq == 0):  # for debugging purposes
             with torch.no_grad():
-                val_reconstruction_loss = test_reconstruction_f(
-                    ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
-                    encoder_3d, encoder_traj, rotate,
-                    encoder_flow, flow, log, epoch, n_iter, writer)
+                # val_reconstruction_loss = test_reconstruction_f(
+                #     ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
+                #     encoder_3d, encoder_traj, rotate,
+                #     encoder_flow, flow, log, epoch, n_iter, writer)
                 #output_dir = visualize_synthesis(args, ValidLoader, encoder_flow, flow,
                 #                                 log, n_iter)
                 #avg_psnr, _, _ = test_synthesis(output_dir)
-                val_interpolation_loss = test_reconstruction_f(
+                val_total_loss = test_f(
                     ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
                     encoder_3d, encoder_traj, rotate,
                     encoder_flow, flow, log, epoch, n_iter, writer)
-            val_total_loss = val_reconstruction_loss + val_interpolation_loss
             log.info("Saving new checkpoint_flow.")
             savefilename = args.savepath + '/checkpoint_flow.tar'
             save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
@@ -272,18 +329,6 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
                 cur_min_loss = val_total_loss
                 savefilename = args.savepath + '/checkpoint_flow_best.tar'
                 save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
-
-
-def compute_reconstruction_loss_f(encoder_flow, flow, target_train,
-                                  rot_codes, return_output):
-    """Computes end frame reconstruction loss."""
-    flow_rep = encoder_flow(rot_codes, target_train)
-    reconstruct_voxel = flow(rot_codes, flow_rep)
-    loss_l1 = (reconstruct_voxel - target_train).abs().mean()
-    if return_output:
-        return loss_l1, reconstruct_voxel
-    else:
-        return loss_l1
 
 
 def compute_interpolation_loss_f(encoder_flow, flow, target_middle, fraction,
@@ -304,9 +349,10 @@ def compute_interpolation_loss_f(encoder_flow, flow, target_middle, fraction,
         return loss_l1
 
 
-def test_reconstruction_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
-                          encoder_3d, encoder_traj, rotate,
-                          encoder_flow, flow, log, epoch, n_iter, writer):
+def test_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
+            encoder_3d, encoder_traj, rotate,
+            encoder_flow, flow, log, epoch, n_iter, writer):
+    print("\nRunning validation...")
     _loss = AverageMeter()
     n_b = len(dataloader)
 
@@ -318,63 +364,136 @@ def test_reconstruction_f(dataloader, frame_limit, start_frame_idx, end_frame_id
         video_clips = video_clips.to(device)
         n_iter = b_i + n_b * epoch
 
+        if debug:
+            video_clips = video_clips[0:2, 0:4]  # for debugging purposes
         with torch.no_grad():
-            start_rot_codes, end_rot_codes = generate_voxels(
-                video_clips, frame_limit, encoder_3d, encoder_traj, rotate,
-                start_frame_idx, end_frame_idx)
-            l_r = compute_reconstruction_loss_f(
-                encoder_flow, flow,
-                target_train=end_rot_codes, rot_codes=start_rot_codes, return_output=False)
-        writer.add_scalar('Reconstruction Loss (Valid)', l_r, n_iter)
-        _loss.update(l_r.item())
+            reconstruction_loss = compute_reconstruction_loss_flow(
+                args, encoder_3d, encoder_traj, encoder_flow, flow,
+                video_clips, optimizer=None)
+
+            start_rot_codes_end_ref, end_rot_codes, \
+                start_rot_codes_mid_ref, middle_rot_codes = \
+                    generate_interpolation_pairs_batch(video_clips, encoder_3d, encoder_traj)
+            interpolation_loss = compute_interpolation_loss_f(
+                encoder_flow, flow, middle_rot_codes, fraction=0.5,
+                start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
+                start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
+
+            total_loss = reconstruction_loss + interpolation_loss
+        writer.add_scalar('Total Loss (Valid)', total_loss, n_iter)
+        _loss.update(total_loss.item())
         info = 'Loss = {:.3f}({:.3f})'.format(_loss.val, _loss.avg)
         b_t = time.perf_counter() - b_s
-        log.info('Validation (recon.) at Epoch {} [{}/{}] {} T={:.2f}'.format(
+        log.info('Validation (total) at Epoch {} [{}/{}] {} T={:.2f}'.format(
             epoch, b_i, n_b, info, b_t))
 
     return _loss.avg
 
 
-def test_interpolation_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
-                         encoder_3d, encoder_traj, rotate,
-                         encoder_flow, flow, log, epoch, n_iter, writer):
-    _loss = AverageMeter()
-    n_b = len(dataloader)
+### scratch work
 
-    encoder_flow.eval()
-    flow.eval()
+# def generate_voxels(video_clips, frame_limit, encoder_3d, encoder_traj, rotate,
+#          start_frame_idx, end_frame_idx):
+#     """Generates start voxels and end voxels.
 
-    for b_i, video_clips in enumerate(dataloader):
-        b_s = time.perf_counter()
-        video_clips = video_clips.to(device)
-        n_iter = b_i + n_b * epoch
+#     Assumes that the batch size of `video_clips` is 1.
+#     The start voxels are rotated according the trajectory from start to end."""
+#     full_clip = video_clips[0, :frame_limit].to(device)
 
-        with torch.no_grad():
-            interpolation_loss = 0.0
-            start_end_pairs, start_mid_pairs = generate_interpolation_pairs(
-                video_clips, frame_limit, encoder_3d, encoder_traj, rotate,
-                start_frame_idx, end_frame_idx)
-            for start_end_pair, start_mid_pair in zip(
-                    start_end_pairs, start_mid_pairs):
-                start_rot_codes_end_ref, end_rot_codes = start_end_pair
-                start_rot_codes_mid_ref, middle_rot_codes = start_mid_pair
-                interpolation_loss += compute_interpolation_loss_f(
-                    encoder_flow, flow, middle_rot_codes, fraction=0.5,
-                    start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
-                    start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
-                print("interpolation loss", interpolation_loss)
-        writer.add_scalar('Interpolation Loss (Valid)', l_r, n_iter)
-        _loss.update(interpolation_loss.item())
-        info = 'Loss = {:.3f}({:.3f})'.format(_loss.val, _loss.avg)
-        b_t = time.perf_counter() - b_s
-        log.info('Validation (inter.) at Epoch {} [{}/{}] {} T={:.2f}'.format(
-            epoch, b_i, n_b, info, b_t))
+#     # Extract start and end frames
+#     end_frame_idx = min(end_frame_idx, full_clip.shape[0] - 1)
+#     clip = full_clip[[start_frame_idx, end_frame_idx]]
+#     t, c, h, w = clip.size()
 
-    return _loss.avg
+#     # Predict trajectory
+#     poses = get_poses(encoder_traj, clip)  # T x C x H x W
+#     trajectory = construct_trajectory(poses)  # T x 3 x 4
+#     trajectory = trajectory.reshape(-1, 12)  # T x 3 x 4
+
+#     start_voxel = encoder_3d(clip[0:1])
+#     clip_in = torch.stack([clip[0], clip[1]])  # 2 x 3 x H x W (2 frames)
+#     pose = get_pose_window(encoder_traj, clip_in)  # 2 x 6 (3 for r and 3 for t)
+#     z = euler2mat(pose[1:])  # 1 x 3 x 4 (input = 2nd frame onwards)
+#     start_rot_codes = rotate(start_voxel, z)
+
+#     z_identity = torch.zeros_like(z)
+#     for i in range(3):
+#         z_identity[:, i, i] = 1
+#     end_voxel = encoder_3d(clip[1:2])
+#     end_rot_codes = rotate(end_voxel, z_identity)
+
+#     return start_rot_codes, end_rot_codes
 
 
+# def generate_interpolation_pairs(
+#         video_clips, frame_limit, encoder_3d, encoder_traj, rotate):
+#     """Generates 2-spaced frame pairs for interpolation.
+    
+#     Returns both the end-reference-frame rotated and middle-reference-frame
+#     rotated voxels for the start frame."""
+#     # clip = video_clips[0,:frame_limit].cuda()
+#     video_clips = video_clips[:, :frame_limit]
 
+#     # Extract pairs of frames with a spacing of 2
+#     n, t, c, h, w = video_clips.size()
+#     start_end_pairs = []
+#     start_mid_pairs = []
+#     for batch_idx in range(n):
+#         full_clip = video_clips[batch_idx: batch_idx + 1]
+#         for i in range(t - 3):
+#             subclip = full_clip[:, i: i+3]
+#             start_rot_codes_end_ref, end_rot_codes = generate_voxels(
+#                 subclip[:, [0, 2]], 2, encoder_3d, encoder_traj, rotate,
+#                 start_frame_idx=0, end_frame_idx=1)
+#             start_rot_codes_mid_ref, middle_rot_codes = generate_voxels(
+#                 subclip[:, [0, 1]], 2, encoder_3d, encoder_traj, rotate,
+#                 start_frame_idx=0, end_frame_idx=1)
+#             start_end_pairs.append((start_rot_codes_end_ref, end_rot_codes))
+#             start_mid_pairs.append((start_rot_codes_mid_ref, middle_rot_codes))
 
+#     return start_end_pairs, start_mid_pairs
+
+# def compute_reconstruction_loss_f(encoder_flow, flow, target_train,
+#                                   rot_codes, return_output):
+#     """Computes end frame reconstruction loss."""
+#     flow_rep = encoder_flow(rot_codes, target_train)
+#     reconstruct_voxel = flow(rot_codes, flow_rep)
+#     loss_l1 = (reconstruct_voxel - target_train).abs().mean()
+#     if return_output:
+#         return loss_l1, reconstruct_voxel
+#     else:
+#         return loss_l1
+
+# def test_reconstruction_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
+#                           encoder_3d, encoder_traj, rotate, decoder,
+#                           encoder_flow, flow, log, epoch, n_iter, writer):
+#     _loss = AverageMeter()
+#     n_b = len(dataloader)
+
+#     encoder_3d.eval()
+#     encoder_traj.eval()
+#     encoder_flow.eval()
+#     flow.eval()
+#     rotate.eval()
+#     decoder.eval()
+
+#     for b_i, video_clips in enumerate(dataloader):
+#         b_s = time.perf_counter()
+#         video_clips = video_clips.to(device)
+#         n_iter = b_i + n_b * epoch
+
+#         with torch.no_grad():
+#             reconstruction_loss = compute_reconstruction_loss_flow(
+#                 args, encoder_3d, encoder_traj, rotate, decoder, encoder_flow, flow,
+#                 video_clips, optimizer_g)
+#         writer.add_scalar('Reconstruction Loss (Valid)', l_r, n_iter)
+#         _loss.update(l_r.item())
+#         info = 'Loss = {:.3f}({:.3f})'.format(_loss.val, _loss.avg)
+#         b_t = time.perf_counter() - b_s
+#         log.info('Validation (recon.) at Epoch {} [{}/{}] {} T={:.2f}'.format(
+#             epoch, b_i, n_b, info, b_t))
+
+#     return _loss.avg
 
 # def test_reconstruction(dataloader, encoder_3d, encoder_traj, decoder, rotate, log, epoch, n_iter, writer):
 #     _loss = AverageMeter()
