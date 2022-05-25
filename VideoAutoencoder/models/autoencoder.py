@@ -79,6 +79,14 @@ class EncoderFlow(nn.Module):
         self.conv3d_2 = conv3d(64, 32, kernel_size=3)
         self.conv3d_3 = nn.ConvTranspose3d(32, 32, 3, stride=2)
         self.conv3d_4 = nn.ConvTranspose3d(32, 3, 4, stride=(4, 2, 1), padding=(2, 2, 2))
+        self.init_weights()
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                xavier_uniform_(m.weight.data)
+                if m.bias is not None:
+                    zeros_(m.bias)
 
     def forward(self, transformed_start_voxel, end_voxel):
         out = torch.cat((transformed_start_voxel, end_voxel), axis=1)
@@ -128,6 +136,7 @@ class Flow(nn.Module):
         self.conv3d_2 = nn.Conv3d(64, 64, 3, padding=1)
 
     def forward(self, code, grid):
+        grid = F.tanh(grid)  # Cap values to [0, 1]
         rot_code = F.grid_sample(code, grid, padding_mode=self.padding_mode)
         rot_code = F.leaky_relu(self.conv3d_1(rot_code))
         rot_code = F.leaky_relu(self.conv3d_2(rot_code))
