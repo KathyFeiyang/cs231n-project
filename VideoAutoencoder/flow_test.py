@@ -45,7 +45,7 @@ def main():
     for key, value in sorted(vars(args).items()):
         log.info(str(key) + ': ' + str(value))
 
-    TestData, _ = D.dataloader(args.dataset, 1, args.interval,
+    TestData, _ = D.dataloader(args.dataset, 1, args.interval, n_valid=0,
                                is_train=args.train_set, load_all_frames=True)
     TestLoader = DataLoader(DL.ImageFloder(TestData, args.dataset),
                             batch_size=1, shuffle=False, num_workers=0)
@@ -73,7 +73,7 @@ def main():
             encoder_3d.load_state_dict(checkpoint['encoder_3d'])
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
             encoder_flow.load_state_dict(checkpoint['encoder_flow'])
-            decoder_flow.load_state_dict(checkpoint['decoder_flow'])
+            decoder_flow.load_state_dict(checkpoint['flow'])
             decoder.load_state_dict(checkpoint['decoder'])
             rotate.load_state_dict(checkpoint['rotate'])
             log.info("=> loaded checkpoint '{}'".format(args.resume))

@@ -34,7 +34,7 @@ def main():
     for key, value in sorted(vars(args).items()):
         log.info(str(key) + ': ' + str(value))
 
-    TestData, _ = D.dataloader(args.dataset, 1, args.interval,
+    TestData, _ = D.dataloader(args.dataset, 1, args.interval, n_valid=0,
                                is_train=args.train_set, load_all_frames=True)
     TestLoader = DataLoader(DL.ImageFloder(TestData, args.dataset),
                             batch_size=1, shuffle=False, num_workers=0)
@@ -62,7 +62,7 @@ def main():
             encoder_3d.load_state_dict(checkpoint['encoder_3d'])
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
             encoder_flow.load_state_dict(checkpoint['encoder_flow'])
-            decoder_flow.load_state_dict(checkpoint['decoder_flow'])
+            decoder_flow.load_state_dict(checkpoint['flow'])
             decoder.load_state_dict(checkpoint['decoder'])
             rotate.load_state_dict(checkpoint['rotate'])
             log.info("=> loaded checkpoint '{}'".format(args.resume))
@@ -137,16 +137,16 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
         pose_save_dir = os.path.join(args.savepath, f"Poses")
         os.makedirs(pose_save_dir, exist_ok=True)
         true_camera_file = os.path.dirname(data[b_i][0]).replace('dataset_square', 'RealEstate10K')+'.txt'
-        with open(true_camera_file) as f:
-            f.readline() # remove line 0
-            poses = np.loadtxt(f)
-            camera = poses[:,7:].reshape([-1,12])[:len(trajectory)]
+        # with open(true_camera_file) as f:
+        #     f.readline() # remove line 0
+        #     poses = np.loadtxt(f)
+        #     camera = poses[:,7:].reshape([-1,12])[:len(trajectory)]
         with open(pose_save_dir+f'/video_{b_i}_pred.txt','w') as f:
             lines = [' '.join(map(str,y))+'\n' for y in trajectory.tolist()]
             f.writelines(lines)
-        with open(pose_save_dir+f'/video_{b_i}_true.txt','w') as f:
-            lines = [' '.join(map(str,y))+'\n' for y in camera]
-            f.writelines(lines)
+        # with open(pose_save_dir+f'/video_{b_i}_true.txt','w') as f:
+        #     lines = [' '.join(map(str,y))+'\n' for y in camera]
+        #     f.writelines(lines)
     print()
 
 if __name__ == '__main__':
