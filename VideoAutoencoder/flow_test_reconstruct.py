@@ -10,6 +10,7 @@ from parser import test_re10k_parser
 import data.image_folder as D
 import data.data_loader as DL
 from models.autoencoder import *
+from models.submodule import stn
 from test_helper import *
 from tqdm import tqdm
 import warnings
@@ -112,15 +113,17 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
             clip_in = torch.stack([clip[scene_index], clip[i+1]])
             pose = get_pose_window(encoder_traj, clip_in)
             z = euler2mat(pose[1:])
-            rot_codes = rotate(scene_rep, z)
+            rot_vox = stn(scene_rep, z)
+            rot_codes = rotate.module.second_part(rot_vox)
 
             # construct flow
             final_rep = encoder_3d(video_clips[:, i+1])
-            final_codes = rotate(final_rep, get_pose0(encoder_traj, clip[i+1]))
-            flow_rep = encoder_flow(rot_codes, final_codes)
-            reconstruct_voxel = decoder_flow(rot_codes, flow_rep)
+            final_vox = stn(final_rep, get_pose0(encoder_traj, clip[i+1]))
+            flow_rep = encoder_flow(rot_vox, final_vox)
+            reconstruct_voxel = decoder_flow(rot_vox, flow_rep)
+            reconstruct_codes = rotate.module.second_part(reconstruct_voxel)
 
-            output = decoder(reconstruct_voxel)
+            output = decoder(reconstruct_codes)
             pred = F.interpolate(output, (h, w), mode='bilinear')
             pred = torch.clamp(pred, 0, 1)
             preds.append(pred)

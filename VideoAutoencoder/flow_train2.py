@@ -10,6 +10,7 @@ import data.image_folder as D
 import data.data_loader as DL
 from models.autoencoder import *
 from models.discriminator import *
+from models.submodule import stn
 from train_helper import *
 from eval_syn_re10k import compute_error_video
 from tqdm import tqdm
@@ -62,7 +63,7 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate, dec
         print("Generated all theta")
 
         code_t = codes.unsqueeze(1).repeat(1, t, 1, 1, 1, 1, 1).view(b * t * t, C, H, W, D)
-        rot_codes = rotate(code_t, theta)
+        rot_codes = stn(code_t, theta, args.padding_mode)
         _, C1, H1, W1, D1 = rot_codes.size()
         reshape_rot_codes = rot_codes.view(b, t, t, C1, H1, W1, D1)
         print("Did all rotations")
@@ -72,13 +73,15 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate, dec
         gt_codes = gt_codes.view(b * t * t, C1, H1, W1, D1)
         print("Generated all gt codes")
 
-    for i in range(10):
+    for i in range(5):
         optimizer.zero_grad()
         flow_rep = encoder_flow(rot_codes, gt_codes)
         reconstructed_codes = flow(rot_codes, flow_rep)
+        reg = flow_rep.abs().mean()
         to_ret = (reconstructed_codes - gt_codes).abs().mean()
-        to_ret.backward()
-        print(to_ret, gt_codes.abs().mean(), reconstructed_codes.abs().mean())
+        full_loss = to_ret
+        full_loss.backward()
+        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(), 'reg:', reg, 'default l2:', (gt_codes - rot_codes).square().mean(), 'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
         optimizer.step()
     return to_ret
 
@@ -254,11 +257,11 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
 
         #if n_iter > 0 and n_iter % args.valid_freq == 0:
         if True:
-            with torch.no_grad():
-                val_loss = test_reconstruction_f(
-                    ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
-                    encoder_3d, encoder_traj, rotate,
-                    encoder_flow, flow, log, epoch, n_iter, writer)
+            # with torch.no_grad():
+            #     val_loss = test_reconstruction_f(
+            #         ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
+            #         encoder_3d, encoder_traj, rotate,
+            #         encoder_flow, flow, log, epoch, n_iter, writer)
                 #output_dir = visualize_synthesis(args, ValidLoader, encoder_flow, flow,
                 #                                 log, n_iter)
                 #avg_psnr, _, _ = test_synthesis(output_dir)
@@ -267,12 +270,12 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
             savefilename = args.savepath + '/checkpoint_flow.tar'
             save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
 
-            global cur_min_loss
-            if val_loss < cur_max_psnr:
-                log.info("Saving new best checkpoint_flow.")
-                cur_min_loss = val_loss
-                savefilename = args.savepath + '/checkpoint_flow_best.tar'
-                save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
+            # global cur_min_loss
+            # if val_loss < cur_max_psnr:
+            #     log.info("Saving new best checkpoint_flow.")
+            #     cur_min_loss = val_loss
+            #     savefilename = args.savepath + '/checkpoint_flow_best.tar'
+            #     save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
 
 
 def compute_reconstruction_loss_f(encoder_flow, flow, target_train,
