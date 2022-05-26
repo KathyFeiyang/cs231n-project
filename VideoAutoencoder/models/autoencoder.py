@@ -122,10 +122,18 @@ class EncoderFlow(nn.Module):
         out = self.relu(self.conv3d_2(out))
         out = self.relu(self.conv3d_3(out))
         out = F.tanh(self.conv3d_4(out))
-        out = self.conv3d_5(out)
+        out = F.tanh(self.conv3d_5(out))
+
+        B, _, H, W, D = out.size()
+
+        flow_resh = out.reshape(B * 3, 1, H, W, D)
+        weight = torch.ones((1, 1, 3, 3, 3)) / 27
+        flow_smooth = F.conv3d(flow_resh, weight, stride=1, padding=1)
+
+        out = flow_smooth.reshape(B, 3, H, W, D)
         out = ContiguousGrad.apply(out)
         out = out.permute(0, 2, 3, 4, 1)  # [1, H=32, W=64, H=64, 3]
-        return F.tanh(out)
+        return out
 
 # class EncoderFlow(nn.Module):
 #
