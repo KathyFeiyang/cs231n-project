@@ -81,7 +81,11 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate, dec
         to_ret = (reconstructed_codes - gt_codes).abs().mean()
         full_loss = to_ret
         full_loss.backward()
-        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(), 'reg:', reg, 'default l2:', (gt_codes - rot_codes).square().mean(), 'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
+        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(),
+              'reg:', reg,
+              'default l2:', (gt_codes - rot_codes).square().mean(),
+              'default l1:', (gt_codes - rot_codes).abs().mean(),
+              'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
         optimizer.step()
     return to_ret
 
@@ -130,7 +134,7 @@ def main():
 
     all_param = list(encoder_flow.parameters()) + list(flow.parameters())
 
-    optimizer_g = torch.optim.Adam(all_param, lr=args.lr, betas=(0,0.999))
+    optimizer_g = torch.optim.Adam(all_param, lr=args.lr, betas=(0.9,0.999))
 
     log.info('Number of parameters: {}'.format(sum([p.data.nelement() for p in all_param])))
 
