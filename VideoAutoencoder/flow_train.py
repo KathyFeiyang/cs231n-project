@@ -1,5 +1,6 @@
 import os
 import time
+
 import logger
 import torch
 from torch import autograd
@@ -21,7 +22,8 @@ import warnings
 ### temp ###
 n_valid = 1
 debug = True
-interpolation_only = True
+interpolation_only = False
+recon_train_epochs = 5
 
 parser = train_parser()
 args = parser.parse_args()
@@ -127,7 +129,8 @@ def main():
     log.info('full training time = {:.2f} Hours'.format((time.time() - start_full_time) / 3600))
 
 
-def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, encoder_flow, flow,
+def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
+                                     encoder_flow, flow, decoder,
                                      clips, optimizer, epochs=5):
     if debug:
         print("\nComputing reconstruction loss...")
@@ -177,21 +180,40 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, encoder_flo
 
     if optimizer is None:
         epochs = 1
+
     for i in range(epochs):
         if optimizer is not None:
             optimizer.zero_grad()
+
         flow_rep = encoder_flow(rot_codes, gt_codes)
         reconstructed_codes = flow(rot_codes, flow_rep)
         reg = flow_rep.abs().mean()
         to_ret = (reconstructed_codes - gt_codes).abs().mean()
+
+        target = clips.unsqueeze(1).repeat(1, t, 1, 1, 1, 1).view(b * t * t, c, h, w)
+        loss_perceptual = compute_perceptual_loss(
+            reconstructed_codes, rotate, decoder, target)
+
+        full_loss = to_ret * args.lambda_l1 + loss_perceptual.mean() * args.lambda_perc
         print("Reconstruction loss")
-        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(), 'reg:', reg, 'default l2:', (gt_codes - rot_codes).square().mean(), 'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
+        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(),
+              'reg:', reg,
+              'default l2:', (gt_codes - rot_codes).square().mean(),
+              'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean(),
+              'perceptual loss:', loss_perceptual.mean())
+
         if optimizer is not None:
-            full_loss = to_ret
             full_loss.backward()
             optimizer.step()
 
-    return to_ret
+    return full_loss
+
+
+def compute_perceptual_loss(codes, rotate, decoder, target_imgs):
+    _, c, h, w = target_imgs.size()
+    output = decoder(rotate.module.second_part(codes))
+    output = F.interpolate(output, (h, w), mode='bilinear')
+    return perceptual_loss(output, target_imgs)
 
 
 def generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj):
@@ -271,6 +293,8 @@ def compute_interpolation_loss_f(encoder_flow, flow, target_middle, fraction,
     loss_l1 = (interpolated_middle - target_middle).abs().mean()
     rotate_only_loss_l1 = (start_rot_codes_mid_ref - target_middle).abs().mean()
     flow_reg = flow_rep.abs().mean()
+    # loss_l1 = loss_l1 - flow_reg  # experiments
+    # rotate_only_loss_l1 = rotate_only_loss_l1 - flow_reg
     if debug:
         print("Interpolation loss")
         print(f"L1 loss = {loss_l1}; default L1 loss = {rotate_only_loss_l1}\ndefault - flow = {rotate_only_loss_l1 - loss_l1}; flow reg = {flow_reg}")
@@ -316,8 +340,8 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         reconstruction_loss = 0.0
         if not interpolation_only:
             reconstruction_loss = compute_reconstruction_loss_flow(
-                args, encoder_3d, encoder_traj, encoder_flow, flow,
-                video_clips, optimizer_g, epochs=1)
+                args, encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder,
+                video_clips, optimizer_g, epochs=recon_train_epochs)
             log.info('Epoch {} [{}/{}] Rec Loss = {}'.format(
                 epoch, b_i, n_b, reconstruction_loss))
 
@@ -363,7 +387,7 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
                 val_total_loss = test_f(
                     ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
                     encoder_3d, encoder_traj, rotate,
-                    encoder_flow, flow, log, epoch, n_iter, writer)
+                    encoder_flow, flow, decoder, log, epoch, n_iter, writer)
             log.info("Saving new checkpoint_flow.")
             savefilename = args.savepath + '/checkpoint_flow.tar'
             save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename)
@@ -379,7 +403,7 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
 
 def test_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
             encoder_3d, encoder_traj, rotate,
-            encoder_flow, flow, log, epoch, n_iter, writer):
+            encoder_flow, flow, decoder, log, epoch, n_iter, writer):
     print("\nRunning validation...")
     _loss = AverageMeter()
     n_b = len(dataloader)
@@ -396,7 +420,7 @@ def test_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
             video_clips = video_clips[0:1, 0:5]  # for debugging purposes
         with torch.no_grad():
             reconstruction_loss = compute_reconstruction_loss_flow(
-                args, encoder_3d, encoder_traj, encoder_flow, flow,
+                args, encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder,
                 video_clips, optimizer=None)
 
             interpolation_loss = torch.tensor([0.0], requires_grad=False)
