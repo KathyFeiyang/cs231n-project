@@ -167,16 +167,19 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, encoder_flo
         if debug:
             print("- Generated all gt codes")
 
-    if optimizer is not None:
-        for i in range(epochs):
+    if optimizer is None:
+        epochs = 1
+    for i in range(epochs):
+        if optimizer is not None:
             optimizer.zero_grad()
-            flow_rep = encoder_flow(rot_codes, gt_codes)
-            reconstructed_codes = flow(rot_codes, flow_rep)
-            reg = flow_rep.abs().mean()
-            to_ret = (reconstructed_codes - gt_codes).abs().mean()
+        flow_rep = encoder_flow(rot_codes, gt_codes)
+        reconstructed_codes = flow(rot_codes, flow_rep)
+        reg = flow_rep.abs().mean()
+        to_ret = (reconstructed_codes - gt_codes).abs().mean()
+        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(), 'reg:', reg, 'default l2:', (gt_codes - rot_codes).square().mean(), 'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
+        if optimizer is not None:
             full_loss = to_ret
             full_loss.backward()
-            print('loss l2:', (reconstructed_codes - gt_codes).square().mean(), 'reg:', reg, 'default l2:', (gt_codes - rot_codes).square().mean(), 'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
             optimizer.step()
 
     return to_ret
