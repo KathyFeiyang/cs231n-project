@@ -190,7 +190,7 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
         reg = flow_rep.abs().mean()
         to_ret = (reconstructed_codes - gt_codes).abs().mean()
 
-        target = clips.unsqueeze(1).repeat(1, t, 1, 1, 1, 1).view(b * t * t, c, h, w)
+        target = clips.unsqueeze(2).repeat(1, 1, t, 1, 1, 1).view(b * t * t, c, h, w)
         loss_perceptual = compute_perceptual_loss(
             reconstructed_codes, rotate, decoder, target)
 
