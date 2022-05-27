@@ -14,7 +14,7 @@ def train_parser():
                         help='number of dataloader threads')
 
     # for displays
-    parser.add_argument('--valid_freq', type=int, default=2000,
+    parser.add_argument('--valid_freq', type=int, default=10,
                         help='frequency of validation')
 
 

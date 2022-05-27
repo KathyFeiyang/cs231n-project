@@ -20,18 +20,18 @@ import numpy as np
 import warnings
 
 ### temp ###
-n_valid = 5
+n_valid = 10
 debug = True
 interpolation_only = False
-recon_train_epochs = 5
+recon_train_epochs = 10
 seq_length = 4
-batch_size = 1
+batch_size = 2
 
 parser = train_parser()
 args = parser.parse_args()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Using device {device}")
+print("Device:", device)
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.functional")
 
 
@@ -67,6 +67,8 @@ def main():
 
     if debug:
         args.bsize = batch_size
+        print(f"TrainData len: {len(TrainData)}")
+        print(f"ValidData len: {len(ValidData)}")
         # TrainData = TrainData[:1]  # for debugging purposes
         # ValidData = ValidData[:1]  # for debugging purposes
     TrainLoader = DataLoader(DL.ImageFloder(TrainData, args.dataset),
@@ -181,12 +183,13 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
             pass
             # print("- Generated all gt codes")
 
-    gt_mask = get_mask(gt_codes, rotate, decoder)
-
     sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
 
     if optimizer is None:
         epochs = 1
+        
+    else:
+        gt_mask = get_mask(gt_codes, rotate, decoder)
 
     for i in range(epochs):
         if optimizer is not None:
@@ -196,11 +199,12 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
         rot_codes = rot_codes.to(device)
         flow_rep = encoder_flow(rot_codes, gt_codes)
         reconstructed_codes = flow(rot_codes, flow_rep)
-        if i == 0:
+        if i == 0 and optimizer is not None:
             reconstruct_mask = get_mask(reconstructed_codes, rotate, decoder)
+            mask = torch.max(reconstruct_mask, gt_mask)
+        else:
+            mask = torch.ones_like(reconstructed_codes)
         reg = flow_rep.abs().mean()
-
-        mask = torch.max(reconstruct_mask, gt_mask)
 
         reconstructed_codes1 = clip_vox(reconstructed_codes) * mask
         gt_codes1 = clip_vox(gt_codes) * mask
@@ -213,12 +217,18 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
         #     reconstructed_codes, rotate, decoder, target)
         # full_loss = to_ret * args.lambda_l1 + loss_perceptual.mean() * args.lambda_perc
         print("Reconstruction loss")
-        print('loss l2:', (reconstructed_codes1 - gt_codes1).square().mean(),
-              'reg:', reg,
-              'default l2:', (gt_codes1 - rot_codes1).square().mean(),
-              'default l1:', (gt_codes1 - rot_codes1).abs().mean(),
-              'loss l1 diff (want positive):', (gt_codes1 - rot_codes1).abs().mean() - (gt_codes1 - reconstructed_codes1).abs().mean(),
-              'cos sim:', cos_sim)
+        l1_loss = (gt_codes1 - reconstructed_codes1).abs().mean()
+        l1_default_loss = (gt_codes1 - rot_codes1).abs().mean()
+        l2_loss = (reconstructed_codes1 - gt_codes1).square().mean()
+        l2_default_loss = (rot_codes1 - gt_codes1).square().mean()
+        print(' - loss l2:', l2_loss.item(), '\n',
+              '- default l2:', l2_default_loss.item(), '\n',
+              '- loss l2 diff (want positive):', ((l2_default_loss - l2_loss) / l2_default_loss).item(), '\n',
+              '- reg:', reg.item(), '\n',
+              '- loss l1:', l1_loss.item(), '\n',
+              '- default l1:', l1_default_loss.item(), '\n',
+              '- loss l1 diff (want positive):', ((l1_default_loss - l1_loss) / l1_default_loss).item(), '\n',
+              '- cos sim:', cos_sim.item())
 
         if optimizer is not None:
             full_loss.backward()

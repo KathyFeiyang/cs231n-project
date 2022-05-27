@@ -6,6 +6,8 @@ from .submodule import conv, conv3d, get_resnet50, stn
 
 from .util import euler2mat
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 class Encoder3D(nn.Module):
     def __init__(self, args):
@@ -127,7 +129,7 @@ class EncoderFlow(nn.Module):
         B, _, H, W, D = out.size()
 
         flow_resh = out.reshape(B * 3, 1, H, W, D)
-        weight = torch.ones((1, 1, 3, 3, 3)) / 27
+        weight = (torch.ones((1, 1, 3, 3, 3)) / 27).to(device)
         flow_smooth = F.conv3d(flow_resh, weight, stride=1, padding=1)
 
         out = flow_smooth.reshape(B, 3, H, W, D)
@@ -250,10 +252,5 @@ class Flow(nn.Module):
         r = torch.zeros(B, 6)
         theta = euler2mat(r)
         grid = grid + F.affine_grid(theta, code.size())
-        rot_code = F.grid_sample(code, grid, mode='bilinear', padding_mode=self.padding_mode)
-
-        # rot_code = rot_code.reshape(B * 32, 1, 32, 64, 64)
-        # weight = torch.ones((1, 1, 3, 3, 3)) / 27
-        # rot_code = F.conv3d(rot_code, weight, stride=1, padding=1)
-        # rot_code = rot_code.reshape(B, 32, 32, 64, 64)
+        rot_code = F.grid_sample(code, grid, padding_mode=self.padding_mode)
         return rot_code

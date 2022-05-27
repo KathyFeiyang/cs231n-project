@@ -46,6 +46,6 @@ def euler2mat(angle):
 
     v_trans = angle[:,3:]
 
-    rotMat = torch.cat([rotMat, v_trans.view([B, 3, 1]).to(device)], 2)  # F.affine_grid takes 3x4
+    rotMat = torch.cat([rotMat.to(device), v_trans.view([B, 3, 1]).to(device)], 2)  # F.affine_grid takes 3x4
 
     return rotMat
