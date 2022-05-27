@@ -38,6 +38,27 @@ def gettime():
     # get GMT time in string
     return time.strftime("%Y%m%d%H%M%S", time.gmtime())
 
+def get_mask(vox, rotate, decoder):
+    vox = vox.detach()
+    vox.requires_grad = True
+
+    rot_codes = rotate.module.second_part(vox)
+    reconstruct_im = decoder(rot_codes)
+    full_reconstruct_im = torch.clamp(reconstruct_im, 0, 1)
+
+    importance_loss = full_reconstruct_im.mean()
+
+    importance_loss.backward()
+
+    return vox.grad.abs() / vox.grad.abs().max()
+
+
+def clip_vox(vox):
+    histo, _ = torch.max(vox.abs(), 1, keepdim=True)
+    histo_rep = histo.repeat(1, 32, 1, 1, 1)
+    histo_scale = (histo_rep > 0.005)
+    return vox * histo_scale
+
 def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate, decoder, encoder_flow, flow, clips, optimizer):
     b, t, c, h, w = clips.size()
     rot_codes = None
@@ -72,20 +93,33 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate, dec
         gt_codes = gt_codes.unsqueeze(2).repeat(1, 1, t, 1, 1, 1, 1)
         gt_codes = gt_codes.view(b * t * t, C1, H1, W1, D1)
         print("Generated all gt codes")
+    gt_mask = get_mask(gt_codes, rotate, decoder)
 
+    sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
     for i in range(5):
         optimizer.zero_grad()
         flow_rep = encoder_flow(rot_codes, gt_codes)
         reconstructed_codes = flow(rot_codes, flow_rep)
+        if i == 0:
+            reconstruct_mask = get_mask(reconstructed_codes, rotate, decoder)
         reg = flow_rep.abs().mean()
-        to_ret = (reconstructed_codes - gt_codes).abs().mean()
-        full_loss = to_ret
+
+        # reconstructed_mask = get_mask(reconstructed_codes, rotate, decoder)
+        mask = torch.max(reconstruct_mask, gt_mask)
+
+        reconstructed_codes1 = clip_vox(reconstructed_codes) * mask
+        gt_codes1 = clip_vox(gt_codes) * mask
+        rot_codes1 = clip_vox(rot_codes) * mask
+        to_ret = (reconstructed_codes1 - gt_codes1).abs().mean()
+        cos_sim = (1 - sim(reconstructed_codes1, gt_codes1)).mean()
+        full_loss = to_ret * 1e3 + cos_sim
         full_loss.backward()
-        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(),
+        print('loss l2:', (reconstructed_codes1 - gt_codes1).square().mean(),
               'reg:', reg,
-              'default l2:', (gt_codes - rot_codes).square().mean(),
-              'default l1:', (gt_codes - rot_codes).abs().mean(),
-              'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean())
+              'default l2:', (gt_codes1 - rot_codes1).square().mean(),
+              'default l1:', (gt_codes1 - rot_codes1).abs().mean(),
+              'loss l1 diff (want positive):', (gt_codes1 - rot_codes1).abs().mean() - (gt_codes1 - reconstructed_codes1).abs().mean(),
+              'cos sim:', cos_sim)
         optimizer.step()
     return to_ret
 

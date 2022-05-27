@@ -109,6 +109,7 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
             elif i % args.reinit_k == 0:
                 # reinitialize 3d voxel
                 scene_rep = encoder_3d(pred)
+                # scene_rep = encoder_3d(video_clips[:, i])
                 scene_index = i
             clip_in = torch.stack([clip[scene_index], clip[i+1]])
             pose = get_pose_window(encoder_traj, clip_in)
@@ -120,8 +121,26 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
             final_rep = encoder_3d(video_clips[:, i+1])
             final_vox = stn(final_rep, get_pose0(encoder_traj, clip[i+1]))
             flow_rep = encoder_flow(rot_vox, final_vox)
-            reconstruct_voxel = decoder_flow(rot_vox, flow_rep)
-            reconstruct_codes = rotate.module.second_part(reconstruct_voxel)
+
+            # flow_scaling = flow_rep.abs().max(-1)[0] / flow_rep.abs().max()
+            # flow_scaling = flow_scaling.unsqueeze(1).repeat(1, 32, 1, 1, 1)
+            reconstruct_voxel = decoder_flow(rot_vox, flow_rep) #* flow_scaling
+            # mark absolute difference
+
+            sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
+            flow_scaling = 1-sim(reconstruct_voxel, final_vox) #(reconstruct_voxel - final_vox).abs().mean(1)
+            flow_scaling = flow_scaling / flow_scaling.max()
+            flow_scaling = flow_scaling.unsqueeze(1).repeat(1, 32, 1, 1, 1)
+            print(flow_scaling.mean(), flow_scaling.median())
+
+            # flow_scaling = (reconstruct_voxel - final_vox).abs().mean(1)
+            # flow_scaling = flow_scaling / flow_scaling.max()
+            # flow_scaling = flow_scaling.unsqueeze(1).repeat(1, 32, 1, 1, 1)
+            # print(flow_scaling.mean(), flow_scaling.median())
+
+
+            reconstruct_codes = rotate.module.second_part(reconstruct_voxel) # * (flow_scaling))
 
             output = decoder(reconstruct_codes)
             pred = F.interpolate(output, (h, w), mode='bilinear')

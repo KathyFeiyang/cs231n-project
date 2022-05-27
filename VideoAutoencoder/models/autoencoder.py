@@ -250,5 +250,10 @@ class Flow(nn.Module):
         r = torch.zeros(B, 6)
         theta = euler2mat(r)
         grid = grid + F.affine_grid(theta, code.size())
-        rot_code = F.grid_sample(code, grid, padding_mode=self.padding_mode)
+        rot_code = F.grid_sample(code, grid, mode='bilinear', padding_mode=self.padding_mode)
+
+        # rot_code = rot_code.reshape(B * 32, 1, 32, 64, 64)
+        # weight = torch.ones((1, 1, 3, 3, 3)) / 27
+        # rot_code = F.conv3d(rot_code, weight, stride=1, padding=1)
+        # rot_code = rot_code.reshape(B, 32, 32, 64, 64)
         return rot_code
