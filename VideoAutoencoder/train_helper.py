@@ -182,12 +182,13 @@ def adjust_lr(args, optimizer, epoch, batch, n_b):
         param_group['lr'] = lr
 
 
-def save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder, savefilename):
+def save_checkpoint(encoder_3d, encoder_traj, rotate, encoder_flow, flow, flow_correction, decoder, savefilename):
     torch.save({
         'encoder_3d': encoder_3d.state_dict(),
         'encoder_traj': encoder_traj.state_dict(),
         'rotate': rotate.state_dict(),
         'encoder_flow': encoder_flow.state_dict(),
         'flow': flow.state_dict(),
+        'flow_correction': flow_correction.state_dict(),
         'decoder': decoder.state_dict(),
     }, savefilename)

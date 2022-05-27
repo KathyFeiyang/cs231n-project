@@ -254,3 +254,15 @@ class Flow(nn.Module):
         grid = grid + F.affine_grid(theta, code.size())
         rot_code = F.grid_sample(code, grid, padding_mode=self.padding_mode)
         return rot_code
+
+class FlowCorrection(nn.Module):
+    def __init__(self, args):
+        super(FlowCorrection, self).__init__()
+        self.conv3d_1 = nn.Conv3d(35, 40, 3, padding=1)
+        self.conv3d_2 = nn.Conv3d(40, 32, 3, padding=1)
+
+    def forward(self, flow_output, flow):
+        correction = torch.cat((flow_output, flow.permute(0, 4, 1, 2, 3)), axis=1)
+        correction = F.leaky_relu(self.conv3d_1(correction))
+        correction = self.conv3d_2(correction)
+        return flow_output + correction
