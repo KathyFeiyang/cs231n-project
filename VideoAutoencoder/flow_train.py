@@ -20,15 +20,18 @@ import numpy as np
 import warnings
 
 ### temp ###
-n_valid = 1
+n_valid = 5
 debug = True
 interpolation_only = False
 recon_train_epochs = 5
+seq_length = 4
+batch_size = 1
 
 parser = train_parser()
 args = parser.parse_args()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device {device}")
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.functional")
 
 
@@ -63,9 +66,9 @@ def main():
     log.info(f'#Train vid: {len(TrainData)}')
 
     if debug:
-        args.bsize = 1
-        TrainData = TrainData[:1]  # for debugging purposes
-        ValidData = ValidData[:1]  # for debugging purposes
+        args.bsize = batch_size
+        # TrainData = TrainData[:1]  # for debugging purposes
+        # ValidData = ValidData[:1]  # for debugging purposes
     TrainLoader = DataLoader(DL.ImageFloder(TrainData, args.dataset),
         batch_size=args.bsize, shuffle=True, num_workers=args.worker, drop_last=True
     )
@@ -178,6 +181,10 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
             pass
             # print("- Generated all gt codes")
 
+    gt_mask = get_mask(gt_codes, rotate, decoder)
+
+    sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+
     if optimizer is None:
         epochs = 1
 
@@ -185,22 +192,33 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
         if optimizer is not None:
             optimizer.zero_grad()
 
+        gt_codes = gt_codes.to(device)
+        rot_codes = rot_codes.to(device)
         flow_rep = encoder_flow(rot_codes, gt_codes)
         reconstructed_codes = flow(rot_codes, flow_rep)
+        if i == 0:
+            reconstruct_mask = get_mask(reconstructed_codes, rotate, decoder)
         reg = flow_rep.abs().mean()
+
+        mask = torch.max(reconstruct_mask, gt_mask)
+
+        reconstructed_codes1 = clip_vox(reconstructed_codes) * mask
+        gt_codes1 = clip_vox(gt_codes) * mask
+        rot_codes1 = clip_vox(rot_codes) * mask
         to_ret = (reconstructed_codes - gt_codes).abs().mean()
-
-        target = clips.unsqueeze(2).repeat(1, 1, t, 1, 1, 1).view(b * t * t, c, h, w)
-        loss_perceptual = compute_perceptual_loss(
-            reconstructed_codes, rotate, decoder, target)
-
-        full_loss = to_ret * args.lambda_l1 + loss_perceptual.mean() * args.lambda_perc
+        cos_sim = (1 - sim(reconstructed_codes1, gt_codes1)).mean()
+        full_loss = to_ret * 1e3 + cos_sim
+        # target = clips.unsqueeze(2).repeat(1, 1, t, 1, 1, 1).view(b * t * t, c, h, w)
+        # loss_perceptual = compute_perceptual_loss(
+        #     reconstructed_codes, rotate, decoder, target)
+        # full_loss = to_ret * args.lambda_l1 + loss_perceptual.mean() * args.lambda_perc
         print("Reconstruction loss")
-        print('loss l2:', (reconstructed_codes - gt_codes).square().mean(),
+        print('loss l2:', (reconstructed_codes1 - gt_codes1).square().mean(),
               'reg:', reg,
-              'default l2:', (gt_codes - rot_codes).square().mean(),
-              'loss l1 diff (want positive):', (gt_codes - rot_codes).abs().mean() - (gt_codes - reconstructed_codes).abs().mean(),
-              'perceptual loss:', loss_perceptual.mean())
+              'default l2:', (gt_codes1 - rot_codes1).square().mean(),
+              'default l1:', (gt_codes1 - rot_codes1).abs().mean(),
+              'loss l1 diff (want positive):', (gt_codes1 - rot_codes1).abs().mean() - (gt_codes1 - reconstructed_codes1).abs().mean(),
+              'cos sim:', cos_sim)
 
         if optimizer is not None:
             full_loss.backward()
@@ -214,6 +232,28 @@ def compute_perceptual_loss(codes, rotate, decoder, target_imgs):
     output = decoder(rotate.module.second_part(codes))
     output = F.interpolate(output, (h, w), mode='bilinear')
     return perceptual_loss(output, target_imgs)
+
+
+def get_mask(vox, rotate, decoder):
+    vox = vox.detach()
+    vox.requires_grad = True
+
+    rot_codes = rotate.module.second_part(vox)
+    reconstruct_im = decoder(rot_codes)
+    full_reconstruct_im = torch.clamp(reconstruct_im, 0, 1)
+
+    importance_loss = full_reconstruct_im.mean()
+
+    importance_loss.backward()
+
+    return vox.grad.abs() / vox.grad.abs().max()
+
+
+def clip_vox(vox):
+    histo, _ = torch.max(vox.abs(), 1, keepdim=True)
+    histo_rep = histo.repeat(1, 32, 1, 1, 1)
+    histo_scale = (histo_rep > 0.005)
+    return vox * histo_scale
 
 
 def generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj):
@@ -334,7 +374,7 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         n_iter = b_i + n_b * epoch
 
         if debug:
-            video_clips = video_clips[0:1, 0:5]  # for debugging purposes
+            video_clips = video_clips[0:batch_size, 0:seq_length]  # for debugging purposes
 
         # Compute reconstruction loss and back prop
         reconstruction_loss = 0.0
@@ -348,16 +388,16 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         # Compute interpolation loss and back prop
         optimizer_g.zero_grad()
 
-        interpolation_loss = torch.tensor([0.0], requires_grad=True)
-        for clips in [video_clips, torch.flip(video_clips, dims=(1,))]:
-            # Train and original and reversed video
-            start_rot_codes_end_ref, end_rot_codes, \
-                start_rot_codes_mid_ref, middle_rot_codes = \
-                    generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj)
-            interpolation_loss = interpolation_loss + compute_interpolation_loss_f(
-                encoder_flow, flow, middle_rot_codes, fraction=0.5,
-                start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
-                start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
+        interpolation_loss = torch.tensor([0.0], requires_grad=True).to(device)
+        # for clips in [video_clips, torch.flip(video_clips, dims=(1,))]:
+        #     # Train and original and reversed video
+        #     start_rot_codes_end_ref, end_rot_codes, \
+        #         start_rot_codes_mid_ref, middle_rot_codes = \
+        #             generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj)
+        #     interpolation_loss = interpolation_loss + compute_interpolation_loss_f(
+        #         encoder_flow, flow, middle_rot_codes, fraction=0.5,
+        #         start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
+        #         start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
         log.info('Epoch {} [{}/{}] Int Loss = {}'.format(
             epoch, b_i, n_b, interpolation_loss))
 
@@ -375,7 +415,7 @@ def train(TrainLoader, ValidLoader, start_frame_idx, end_frame_idx,
         info = 'Loss Image = {:.6f}({:.6f})'.format(_loss.val, _loss.avg) if _loss.count > 0 else '..'
         log.info('Epoch {} [{}/{}] {} T={:.2f}'.format(epoch, b_i, n_b, info, batch_time))
 
-        if debug or (n_iter > 0 and n_iter % args.valid_freq == 0):  # for debugging purposes
+        if (n_iter > 0 and n_iter % args.valid_freq == 0):  # for debugging purposes
             with torch.no_grad():
                 # val_reconstruction_loss = test_reconstruction_f(
                 #     ValidLoader, frame_limit, start_frame_idx, end_frame_idx,
@@ -417,22 +457,22 @@ def test_f(dataloader, frame_limit, start_frame_idx, end_frame_idx,
         n_iter = b_i + n_b * epoch
 
         if debug:
-            video_clips = video_clips[0:1, 0:5]  # for debugging purposes
+            video_clips = video_clips[0:batch_size, 0:seq_length]  # for debugging purposes
         with torch.no_grad():
             reconstruction_loss = compute_reconstruction_loss_flow(
                 args, encoder_3d, encoder_traj, rotate, encoder_flow, flow, decoder,
                 video_clips, optimizer=None)
 
-            interpolation_loss = torch.tensor([0.0], requires_grad=False)
-            for clips in [video_clips, torch.flip(video_clips, dims=(1,))]:
-                # Train and original and reversed video
-                start_rot_codes_end_ref, end_rot_codes, \
-                    start_rot_codes_mid_ref, middle_rot_codes = \
-                        generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj)
-                interpolation_loss = interpolation_loss + compute_interpolation_loss_f(
-                    encoder_flow, flow, middle_rot_codes, fraction=0.5,
-                    start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
-                    start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
+            interpolation_loss = torch.tensor([0.0], requires_grad=False).to(device)
+            # for clips in [video_clips, torch.flip(video_clips, dims=(1,))]:
+            #     # Train and original and reversed video
+            #     start_rot_codes_end_ref, end_rot_codes, \
+            #         start_rot_codes_mid_ref, middle_rot_codes = \
+            #             generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj)
+            #     interpolation_loss = interpolation_loss + compute_interpolation_loss_f(
+            #         encoder_flow, flow, middle_rot_codes, fraction=0.5,
+            #         start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
+            #         start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
 
             total_loss = reconstruction_loss + interpolation_loss
         writer.add_scalar('Total Loss (Valid)', total_loss, n_iter)
