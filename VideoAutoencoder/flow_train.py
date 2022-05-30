@@ -24,6 +24,7 @@ n_valid = 10
 debug = True
 interpolation_only = False
 reconstruction_only = False
+include_perceptual_loss = True
 recon_train_epochs = 5
 inter_train_epochs = 3
 seq_length = 4
@@ -205,7 +206,8 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
         loss = compute_losses(
             rot_codes, gt_codes, "reconstruction",
             encoder_flow, rotate, flow, flow_correction, decoder,
-            gt_mask=gt_mask, compute_pred_mask=(i == 0 and optimizer is not None))
+            gt_mask=gt_mask, compute_pred_mask=(i == 0 and optimizer is not None),
+            target_imgs=clips.unsqueeze(2).repeat(1, 1, t, 1, 1, 1).view(b * t * t, c, h, w))
 
         if optimizer is not None:
             loss.backward()
@@ -216,7 +218,7 @@ def compute_reconstruction_loss_flow(args, encoder_3d, encoder_traj, rotate,
 
 def compute_losses(rot_codes, gt_codes, loss_name,
                    encoder_flow, rotate, flow, flow_correction, decoder,
-                   gt_mask=None, compute_pred_mask=True):
+                   gt_mask=None, compute_pred_mask=True, target_imgs=None):
     sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
 
     gt_codes = gt_codes.to(device)
@@ -246,11 +248,21 @@ def compute_losses(rot_codes, gt_codes, loss_name,
 
     l1_loss_partial = (reconstructed_codes_partial1 - gt_codes1).abs().mean()
     cos_sim_partial = (1 - sim(reconstructed_codes_partial1, gt_codes1)).mean()
-    partial_loss = l1_loss_partial * 1e3 + cos_sim_partial
+    if include_perceptual_loss:
+        perceptual_loss_partial = compute_perceptual_loss(
+            reconstructed_codes_partial1, rotate, decoder, target_imgs)
+    else:
+        perceptual_loss_partial = 0
+    partial_loss = l1_loss_partial * 1e3 + cos_sim_partial + perceptual_loss_partial * 1e-1
 
     l1_loss = (reconstructed_codes1 - gt_codes2).abs().mean()
     cos_sim = (1 - sim(reconstructed_codes1, gt_codes2)).mean()
-    full_loss = l1_loss * 1e3 + cos_sim
+    if include_perceptual_loss:
+        perceptual_loss = compute_perceptual_loss(
+            reconstructed_codes1, rotate, decoder, target_imgs)
+    else:
+        perceptual_loss = 0
+    full_loss = l1_loss * 1e3 + cos_sim + perceptual_loss * 1e-1
     print(f"Uncorrected {loss_name} loss")
     l1_default_loss = (gt_codes1 - rot_codes1).abs().mean()
     l2_loss_partial = (reconstructed_codes_partial1 - gt_codes1).square().mean()
@@ -262,7 +274,8 @@ def compute_losses(rot_codes, gt_codes, loss_name,
             '- loss l1:', l1_loss_partial.item(), '\n',
             '- default l1:', l1_default_loss.item(), '\n',
             '- loss l1 diff (want positive):', ((l1_default_loss - l1_loss_partial) / l1_default_loss).item(), '\n',
-            '- cos sim:', cos_sim_partial.item())
+            '- cos sim:', cos_sim_partial.item(), '\n',
+            '- perceptual:', perceptual_loss_partial.item() if include_perceptual_loss else -1)
 
     print(f"Full {loss_name} loss")
     l1_default_loss = (gt_codes2 - rot_codes2).abs().mean()
@@ -275,7 +288,8 @@ def compute_losses(rot_codes, gt_codes, loss_name,
             '- loss l1:', l1_loss.item(), '\n',
             '- default l1:', l1_default_loss.item(), '\n',
             '- loss l1 diff (want positive):', ((l1_default_loss - l1_loss) / l1_default_loss).item(), '\n',
-            '- cos sim:', cos_sim.item())
+            '- cos sim:', cos_sim.item(), '\n',
+            '- perceptual:', perceptual_loss.item() if include_perceptual_loss else -1)
 
     loss = full_loss + partial_loss
     return loss
@@ -320,7 +334,7 @@ def train_on_interpolation_loss(video_clips, encoder_3d, encoder_traj,
 
         with torch.no_grad():
             start_rot_codes_end_ref, end_rot_codes, \
-                start_rot_codes_mid_ref, middle_rot_codes = \
+                start_rot_codes_mid_ref, middle_rot_codes, target_imgs = \
                     generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj)
 
         if optimizer is None:
@@ -340,7 +354,8 @@ def train_on_interpolation_loss(video_clips, encoder_3d, encoder_traj,
                 middle_rot_codes, fraction=0.5, is_train=(i == 0 and optimizer is not None),
                 gt_mask=gt_mask,
                 start_rot_codes_end_ref=start_rot_codes_end_ref, end_rot_codes=end_rot_codes,
-                start_rot_codes_mid_ref=start_rot_codes_mid_ref, return_output=False)
+                start_rot_codes_mid_ref=start_rot_codes_mid_ref, target_imgs=target_imgs,
+                return_output=False)
 
             if optimizer is not None:
                 loss.backward()
@@ -375,6 +390,7 @@ def generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj):
     clips_start = clips[:, :t-2]
     clips_end = clips[:, 2:]
     clips_middle = clips[:, 1: t-1]
+    target_imgs = clips_end.view(b * (t - 2), c, h, w)
     if debug:
         pass
         # print("- Generated all start, end, middle clips")
@@ -410,13 +426,13 @@ def generate_interpolation_pairs_batch(clips, encoder_3d, encoder_traj):
         # print("- Generated end and middle codes")
 
     return start_rot_codes_end_ref, end_rot_codes, \
-            start_rot_codes_mid_ref, middle_rot_codes
+            start_rot_codes_mid_ref, middle_rot_codes, target_imgs
 
 
 def compute_interpolation_loss_f(encoder_flow, rotate, flow, flow_correction, decoder,
                                  target_middle, fraction, is_train, gt_mask,
                                  start_rot_codes_end_ref, end_rot_codes,
-                                 start_rot_codes_mid_ref, return_output):
+                                 start_rot_codes_mid_ref, target_imgs, return_output):
     """Computes middle frame interpolation loss.
 
     This loss enforces the flow representation to be linear and support
@@ -431,7 +447,7 @@ def compute_interpolation_loss_f(encoder_flow, rotate, flow, flow_correction, de
     loss = compute_losses(
         interpolated_middle, target_middle, "interpolation",
         encoder_flow, rotate, flow, flow_correction, decoder,
-        gt_mask=gt_mask, compute_pred_mask=is_train)
+        gt_mask=gt_mask, compute_pred_mask=is_train, target_imgs=target_imgs)
     if return_output:
         return loss, interpolated_middle
     else:
