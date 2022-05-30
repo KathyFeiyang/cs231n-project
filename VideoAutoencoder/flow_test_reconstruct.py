@@ -22,6 +22,8 @@ np.set_printoptions(precision=3)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+flow_correct = True
+
 def gettime():
     # get GMT time in string
     return time.strftime("%Y%m%d%H%M%S", time.gmtime())
@@ -45,6 +47,7 @@ def main():
     encoder_traj = EncoderTraj(args)
     encoder_flow = EncoderFlow(args)
     decoder_flow = Flow(args)
+    flow_correction = FlowCorrection(args)
     rotate = Rotate(args)
     decoder = Decoder(args)
 
@@ -53,6 +56,7 @@ def main():
     encoder_traj = nn.DataParallel(encoder_traj).to(device)
     encoder_flow = nn.DataParallel(encoder_flow).to(device)
     decoder_flow = nn.DataParallel(decoder_flow).to(device)
+    flow_correction = nn.DataParallel(flow_correction).to(device)
     rotate = nn.DataParallel(rotate).to(device)
     decoder = nn.DataParallel(decoder).to(device)
 
@@ -64,6 +68,8 @@ def main():
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
             encoder_flow.load_state_dict(checkpoint['encoder_flow'])
             decoder_flow.load_state_dict(checkpoint['flow'])
+            if flow_correct:
+                flow_correction.load_state_dict(checkpoint['flow_correction'])
             decoder.load_state_dict(checkpoint['decoder'])
             rotate.load_state_dict(checkpoint['rotate'])
             log.info("=> loaded checkpoint '{}'".format(args.resume))
@@ -76,10 +82,10 @@ def main():
     start_full_time = time.time()
     with torch.no_grad():
         log.info('start testing.')
-        test(TestData, TestLoader, encoder_3d, encoder_traj, encoder_flow, decoder_flow, decoder, rotate, log)
+        test(TestData, TestLoader, encoder_3d, encoder_traj, encoder_flow, decoder_flow, flow_correction, decoder, rotate, log)
     log.info('full testing time = {:.2f} Minutes'.format((time.time() - start_full_time) / 60))
 
-def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow, decoder, rotate, log):
+def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow, flow_correction, decoder, rotate, log):
     _loss = AverageMeter()
     video_limit = min(args.video_limit, len(dataloader))
     frame_limit = args.frame_limit
@@ -124,7 +130,11 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
 
             # flow_scaling = flow_rep.abs().max(-1)[0] / flow_rep.abs().max()
             # flow_scaling = flow_scaling.unsqueeze(1).repeat(1, 32, 1, 1, 1)
-            reconstruct_voxel = decoder_flow(rot_vox, flow_rep) #* flow_scaling
+            reconstruct_voxel_partial = decoder_flow(rot_vox, flow_rep)
+            if flow_correct:
+                reconstruct_voxel = flow_correction(reconstruct_voxel_partial, flow_rep)
+            else:
+                reconstruct_voxel = reconstruct_voxel_partial
             # mark absolute difference
 
             sim = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
