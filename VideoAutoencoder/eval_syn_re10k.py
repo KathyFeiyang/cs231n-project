@@ -35,7 +35,9 @@ def compute_perceptual_similarity(video1, video2, lpips=False):
     vgg16 = PNet(use_gpu=(device=='cuda'))
     vgg16.eval()
 
-    assert video1.shape == video2.shape
+    # assert video1.shape == video2.shape
+    if video1.shape != video2.shape:
+        return None
 
     values_percsim = []
     values_ssim = []
@@ -105,6 +107,7 @@ if __name__ == "__main__":
     print(f'Evaluating {max_i} trajectories.')
 
     pb = tqdm(range(max_i))
+    valid_ids = []
     for i in pb:
         est_file = f'{output_dir}/video_{i}_pred.mp4'
         ref_file = f'{output_dir}/video_{i}_true.mp4'
@@ -113,12 +116,15 @@ if __name__ == "__main__":
         video2 = load_videos(ref_file)
 
         results = compute_perceptual_similarity(video1, video2, lpips=args.lpips)
+        if results is None:
+            continue
         if not (np.isfinite(results['PSNR']) and np.isfinite(results['SSIM']) and np.isfinite(results['LPIPS'])):
             continue
 
         values_psnr.append(results['PSNR'])
         values_ssim.append(results['SSIM'])
         values_lpips.append(results['LPIPS'])
+        valid_ids.append(i)
 
     avg_psnr = np.mean(np.array(values_psnr))
     avg_ssim = np.mean(np.array(values_ssim))
@@ -128,10 +134,11 @@ if __name__ == "__main__":
 
     results = pd.DataFrame(
         {
-            "id": range(max_i),
+            "id": valid_ids,
             "psnr": values_psnr,
             "ssim": values_ssim,
             "lpips": values_lpips,
         }
     )
     results.to_csv(os.path.join(output_dir, "results.csv"))
+    print(f"#Valid evaluations:", len(valid_ids))
