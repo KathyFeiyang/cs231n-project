@@ -127,10 +127,11 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
             scene_rep = encoder_3d(video_clips[:, i])
             clip_in = torch.stack([clip[i], clip[i+2]])
             pose = get_pose_window(encoder_traj, clip_in)
-            # pose = _get_fraction_transfor(fraction, pose)
+            fraction_pose = _get_fraction_transfor(fraction, pose)
             z = euler2mat(pose[1:])
+            fraction_z = euler2mat(fraction_pose[1:])
             rot_vox = stn(scene_rep, z)
-            rot_mid_vox = stn(scene_rep, _get_fraction_transfor(fraction, z))
+            rot_mid_vox = stn(scene_rep, fraction_z)
             # rot_codes = rotate.module.second_part(rot_vox)
 
             if not baseline:
