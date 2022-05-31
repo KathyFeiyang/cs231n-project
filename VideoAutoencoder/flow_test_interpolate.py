@@ -24,6 +24,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 fraction = 0.5
 flow_correct = False
+baseline = False
 
 def get_fraction_transform(start_frame_idx, end_frame_idx, mid_frame_idx, original):
     """Computes fraction of rotation + translation transformation."""
@@ -77,10 +78,11 @@ def main():
             checkpoint = torch.load(args.resume, map_location=torch.device(device))
             encoder_3d.load_state_dict(checkpoint['encoder_3d'])
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
-            encoder_flow.load_state_dict(checkpoint['encoder_flow'])
-            decoder_flow.load_state_dict(checkpoint['flow'])
-            if flow_correct:
-                flow_correction.load_state_dict(checkpoint['flow_correction'])
+            if not baseline:
+                encoder_flow.load_state_dict(checkpoint['encoder_flow'])
+                decoder_flow.load_state_dict(checkpoint['flow'])
+                if flow_correct:
+                    flow_correction.load_state_dict(checkpoint['flow_correction'])
             decoder.load_state_dict(checkpoint['decoder'])
             rotate.load_state_dict(checkpoint['rotate'])
             log.info("=> loaded checkpoint '{}'".format(args.resume))
@@ -128,21 +130,25 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
             pose = _get_fraction_transfor(fraction, pose)
             z = euler2mat(pose[1:])
             rot_vox = stn(scene_rep, z)
+            rot_mid_vox = stn(scene_rep, _get_fraction_transfor(fraction, z))
             # rot_codes = rotate.module.second_part(rot_vox)
 
-            # construct flow
-            final_rep = encoder_3d(video_clips[:, i+2])
-            final_vox = stn(final_rep, get_pose0(encoder_traj, clip[i+2]))
-            flow_rep = encoder_flow(rot_vox, final_vox)
-            fraction_flow_rep = _get_fraction_transfor(fraction, flow_rep)
+            if not baseline:
+                # construct flow
+                final_rep = encoder_3d(video_clips[:, i+2])
+                final_vox = stn(final_rep, get_pose0(encoder_traj, clip[i+2]))
+                flow_rep = encoder_flow(rot_vox, final_vox)
+                fraction_flow_rep = _get_fraction_transfor(fraction, flow_rep)
 
-            reconstructed_codes_partial = decoder_flow(rot_vox, fraction_flow_rep)
-            if flow_correct:
-                reconstructed_codes = flow_correction(reconstructed_codes_partial, fraction_flow_rep)
+                reconstructed_codes_partial = decoder_flow(rot_mid_vox, fraction_flow_rep)
+                if flow_correct:
+                    reconstructed_codes = flow_correction(reconstructed_codes_partial, fraction_flow_rep)
+                else:
+                    reconstructed_codes = reconstructed_codes_partial
+
+                reconstruct_codes = rotate.module.second_part(reconstructed_codes)
             else:
-                reconstructed_codes = reconstructed_codes_partial
-
-            reconstruct_codes = rotate.module.second_part(reconstructed_codes)
+                reconstruct_codes = rotate.module.second_part(rot_mid_vox)
 
             output = decoder(reconstruct_codes)
             pred = F.interpolate(output, (h, w), mode='bilinear')
