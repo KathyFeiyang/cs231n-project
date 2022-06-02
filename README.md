@@ -21,7 +21,7 @@ python flow_train.py --savepath log/model --resume mp3d.ckpt --dataset HMDB51 --
 
 `flow_test_interpolate.py` is the entry point for interpolating novel middle frames. A sample command is:
 ```
-python flow_test_interpolate.py --savepath log/exp0_inter --resume flow_checkpoint.ckpt --dataset HMDB51 --interval 1 --video_limit 1000
+python flow_test_interpolate.py --savepath log/exp0_inter --resume flow_checkpoint.tar --dataset HMDB51 --interval 1 --video_limit 1000
 ```
 
 After generating videos frames, such as through interpolation, you can use `eval_syn_re10k.py` to evaluate the quality of the generations using LIPIS, PSNR and SSIM. A sample command is:
@@ -30,7 +30,7 @@ python eval_syn_re10k.py --lpips log/interpolation_output/Videos/
 ```
 
 ## Model checkpoint
-We release the model checkpoint from our best performing model [here]().
+We release the model checkpoint from our best performing model [here](https://drive.google.com/file/d/1l2uG2mx2O836f827Go7fCXVB4zaJekM9/view?usp=sharing).
 
 ## License
 This repository is made available to the public under the MIT license.
