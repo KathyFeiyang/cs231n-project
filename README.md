@@ -30,7 +30,7 @@ python eval_syn_re10k.py --lpips log/interpolation_output/Videos/
 ```
 
 ## Model checkpoint
-We release the model checkpoint from our best performing model [here](https://drive.google.com/file/d/1l2uG2mx2O836f827Go7fCXVB4zaJekM9/view?usp=sharing).
+We release the model checkpoint from our best performing model [here](https://drive.google.com/file/d/1OqGMevQEGZUN-NZS2AiTkVk7EouvMznF/view?usp=sharing).
 
 ## License
 This repository is made available to the public under the MIT license.
