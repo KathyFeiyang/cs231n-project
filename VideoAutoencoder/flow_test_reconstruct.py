@@ -22,6 +22,7 @@ np.set_printoptions(precision=3)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+use_flow = True
 flow_correct = True
 
 def gettime():
@@ -66,8 +67,9 @@ def main():
             checkpoint = torch.load(args.resume, map_location=torch.device(device))
             encoder_3d.load_state_dict(checkpoint['encoder_3d'])
             encoder_traj.load_state_dict(checkpoint['encoder_traj'])
-            encoder_flow.load_state_dict(checkpoint['encoder_flow'])
-            decoder_flow.load_state_dict(checkpoint['flow'])
+            if use_flow:
+                encoder_flow.load_state_dict(checkpoint['encoder_flow'])
+                decoder_flow.load_state_dict(checkpoint['flow'])
             if flow_correct:
                 flow_correction.load_state_dict(checkpoint['flow_correction'])
             decoder.load_state_dict(checkpoint['decoder'])
@@ -114,8 +116,8 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
                 scene_index = 0
             elif i % args.reinit_k == 0:
                 # reinitialize 3d voxel
-                scene_rep = encoder_3d(pred)
-                # scene_rep = encoder_3d(video_clips[:, i])
+                # scene_rep = encoder_3d(pred)
+                scene_rep = encoder_3d(video_clips[:, i])
                 scene_index = i
             clip_in = torch.stack([clip[scene_index], clip[i+1]])
             pose = get_pose_window(encoder_traj, clip_in)
@@ -126,11 +128,14 @@ def test(data, dataloader, encoder_3d, encoder_traj, encoder_flow, decoder_flow,
             # construct flow
             final_rep = encoder_3d(video_clips[:, i+1])
             final_vox = stn(final_rep, get_pose0(encoder_traj, clip[i+1]))
-            flow_rep = encoder_flow(rot_vox, final_vox)
+            if use_flow:
+                flow_rep = encoder_flow(rot_vox, final_vox)
 
-            # flow_scaling = flow_rep.abs().max(-1)[0] / flow_rep.abs().max()
-            # flow_scaling = flow_scaling.unsqueeze(1).repeat(1, 32, 1, 1, 1)
-            reconstruct_voxel_partial = decoder_flow(rot_vox, flow_rep)
+                # flow_scaling = flow_rep.abs().max(-1)[0] / flow_rep.abs().max()
+                # flow_scaling = flow_scaling.unsqueeze(1).repeat(1, 32, 1, 1, 1)
+                reconstruct_voxel_partial = decoder_flow(rot_vox, flow_rep)
+            else:
+                reconstruct_voxel_partial = rot_vox
             if flow_correct:
                 reconstruct_voxel = flow_correction(reconstruct_voxel_partial, flow_rep)
             else:
